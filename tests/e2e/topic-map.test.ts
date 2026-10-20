@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { enqueue } from '../../src/jobs/queue';
 import { GRAPH, MCQ } from '../fixtures/fake-model';
 import { createHarness } from '../fixtures/harness';
 
@@ -66,5 +67,73 @@ describe('学习主题的认知地图', () => {
     expect(pending.topic.graphStatus).toBe('pending');
     expect(pending.points).toEqual([]);
     expect((await call('GET', '/api/topics/no-such-topic/map')).status).toBe(404);
+  });
+});
+
+/**
+ * 重新学习：学过的知识点退回理解阶段，下一节微课堂换一种讲法重讲；作答记录保留。
+ */
+describe('重新学习', () => {
+  async function afterFirstSession() {
+    const harness = createHarness();
+    const { topicId } = (await harness.call('POST', '/api/topics', { title: 'TypeScript 常用技能' })).body;
+    await harness.worker.runUntilIdle();
+    const session = (await harness.call('POST', '/api/sessions/next')).body.session;
+    const [union, unknown] = session.items;
+    const ok = await harness.call('POST', '/api/attempts', { sessionId: session.id, itemId: union.id, answer: { choice: MCQ.answerIndex } });
+    await harness.call('POST', `/api/attempts/${ok.body.attemptId}/rating`, { selfRating: 'good' });
+    await harness.call('POST', '/api/attempts', { sessionId: session.id, itemId: unknown.id, answer: { text: '不记得了' } });
+    await harness.call('POST', `/api/sessions/${session.id}/finish`);
+    await harness.worker.runUntilIdle();
+    const pointOf = async (id: string) =>
+      (await harness.call('GET', `/api/topics/${topicId}/map`)).body.points.find((p: any) => p.id === id);
+    return { ...harness, union, unknown, pointOf };
+  }
+
+  it('学过的知识点退回理解阶段，不再排复习，作答记录保留', async () => {
+    const { call, union, pointOf } = await afterFirstSession();
+    const res = await call('POST', '/api/relearn', { knowledgePointIds: [union.knowledgePointId] });
+    expect(res.body).toEqual({ relearned: [union.knowledgePointId] });
+    expect(await pointOf(union.knowledgePointId)).toMatchObject({ stage: 'understand', nextReviewAt: null });
+    expect((await pointOf(union.knowledgePointId)).records).toHaveLength(1);
+  });
+
+  it('下一节微课堂（不必等到期）用另一种讲解形式重讲', async () => {
+    const { call, worker, union } = await afterFirstSession();
+    await call('POST', '/api/relearn', { knowledgePointIds: [union.knowledgePointId] });
+    await worker.runUntilIdle();
+    const next = (await call('POST', '/api/sessions/next')).body.session;
+    const again = next.items.find((i: any) => i.knowledgePointId === union.knowledgePointId);
+    expect(again).toMatchObject({ kind: 'lesson', purpose: 'advance' });
+    expect(again.form).not.toBe(union.form);
+  });
+
+  it('还没学会的知识点（理解阶段、未学）跳过，不报错', async () => {
+    const { call, unknown, pointOf } = await afterFirstSession();
+    const map = await pointOf(unknown.knowledgePointId);
+    const res = await call('POST', '/api/relearn', { knowledgePointIds: [unknown.knowledgePointId] });
+    expect(res.body).toEqual({ relearned: [] });
+    expect(await pointOf(unknown.knowledgePointId)).toEqual(map);
+  });
+
+  it('知识点还在未完成的一节里等作答时拒绝，状态不变', async () => {
+    const { call, worker, db, union, pointOf } = await afterFirstSession();
+    // 远在到期之后：按那时的时间补好复习题，再开一节含"联合类型"复习题的微课堂，先不作答
+    const later = new Date('2027-06-01T09:00:00Z');
+    enqueue(db, 'fill_pool', { now: later.toISOString() }, later);
+    await worker.runUntilIdle();
+    const open = (await call('POST', '/api/sessions/next', undefined, later)).body.session;
+    expect(open.items.some((i: any) => i.knowledgePointId === union.knowledgePointId && i.kind === 'review')).toBe(true);
+
+    const before = await pointOf(union.knowledgePointId);
+    const res = await call('POST', '/api/relearn', { knowledgePointIds: [union.knowledgePointId] }, later);
+    expect(res.status).toBe(409);
+    expect((await pointOf(union.knowledgePointId)).stage).toBe(before.stage);
+  });
+
+  it('知识点不存在时返回 404，没选知识点时返回 400', async () => {
+    const { call } = await afterFirstSession();
+    expect((await call('POST', '/api/relearn', { knowledgePointIds: ['no-such-point'] })).status).toBe(404);
+    expect((await call('POST', '/api/relearn', { knowledgePointIds: [] })).status).toBe(400);
   });
 });

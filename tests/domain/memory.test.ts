@@ -6,6 +6,7 @@ import {
   applyLessonOutcome,
   applyReviewOutcome,
   isDue,
+  relearn,
   reviveCard,
   toGrade,
 } from '../../src/domain/memory';
@@ -91,6 +92,25 @@ describe('回忆阶段：复习', () => {
 
   it('未学过的知识点不能按复习结果更新', () => {
     expect(() => applyReviewOutcome(UNLEARNED, 'mcq', { correct: false }, now)).toThrow();
+  });
+});
+
+describe('重新学习', () => {
+  it('学过的知识点退回理解阶段，不再排复习，保留上次形式以便换一种讲法', () => {
+    const state = relearn(learned());
+    expect(state).toEqual({ stage: 'understand', card: null, lastExplainForm: forms.explainForm, lastQuestionForm: forms.questionForm });
+    expect(isDue(state, new Date(now.getTime() + 365 * DAY))).toBe(false);
+  });
+
+  it('重讲后答对，从头开始间隔调度', () => {
+    const again = applyLessonOutcome(relearn(learned('easy')), { explainForm: 'explain_analogy', questionForm: 'short_answer' }, { correct: true, selfRating: 'good' }, now);
+    expect(again.stage).toBe('recall');
+    expect(again.card!.reps).toBe(1);
+  });
+
+  it('还没学过（未学、理解阶段）的知识点不能重新学习', () => {
+    expect(() => relearn(UNLEARNED)).toThrow();
+    expect(() => relearn({ ...UNLEARNED, stage: 'understand' })).toThrow();
   });
 });
 

@@ -385,3 +385,30 @@ blockquote {
   border-left: 3px solid var(--border);
   white-space: pre-wrap;
 }
+
+.notice {
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: var(--ok-bg);
+}
+
+/* 按日期重新学习 */
+.relearn-day {
+  padding: 12px;
+  margin-bottom: 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.relearn-day p {
+  margin: 4px 0 8px;
+}
+
+select {
+  font: inherit;
+  padding: 4px 8px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+}

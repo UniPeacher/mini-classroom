@@ -50,6 +50,7 @@ export const api = {
   listTopics: () => request<{ topics: Topic[] }>('GET', '/api/topics'),
   createTopic: (title: string) => request<{ topicId: string }>('POST', '/api/topics', { title }),
   topicMap: (topicId: string) => request<TopicMap>('GET', `/api/topics/${topicId}/map`),
+  relearn: (knowledgePointIds: string[]) => request<{ relearned: string[] }>('POST', '/api/relearn', { knowledgePointIds }),
   nextSession: () => request<NextSession>('POST', '/api/sessions/next'),
   submitAttempt: (body: { sessionId: string; itemId: string; answer: Answer; durationMs: number }) =>
     request<AttemptResult>('POST', '/api/attempts', body),

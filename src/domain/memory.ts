@@ -65,6 +65,15 @@ export function applyReviewOutcome(
   return { ...state, card, lastQuestionForm: questionForm };
 }
 
+/**
+ * 重新学习：已学过的知识点退回理解阶段，清掉间隔调度。
+ * 理解阶段的知识点由下一节微课堂换一种讲解形式重讲，答对后重新开始调度。
+ */
+export function relearn(state: MemoryState): MemoryState {
+  if (!hasLearned(state.stage)) throw new Error(`知识点处于 ${state.stage} 阶段，还没学过，不能重新学习`);
+  return { ...state, stage: 'understand', card: null };
+}
+
 /** 此刻是否到期复习。 */
 export function isDue(state: MemoryState, now: Date): boolean {
   return hasLearned(state.stage) && state.card !== null && state.card.due.getTime() <= now.getTime();

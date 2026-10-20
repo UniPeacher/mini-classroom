@@ -5,7 +5,7 @@ import { gradeShortAnswer } from '../ai/generators';
 import { assemble } from '../domain/assemble';
 import { cognitiveEdge } from '../domain/edge';
 import { gradeMcq } from '../domain/grading';
-import { type Outcome, type SelfRating, UNLEARNED, applyLessonOutcome, applyReviewOutcome } from '../domain/memory';
+import { type Outcome, type SelfRating, UNLEARNED, applyLessonOutcome, applyReviewOutcome, hasLearned, relearn } from '../domain/memory';
 import { enqueue } from '../jobs/queue';
 import type { Settings } from '../settings';
 import type { Grade, LessonContent, Question, ReviewContent } from '../shared/content';
@@ -184,7 +184,43 @@ export function createLearning({ db, model, settings }: LearningDeps) {
     };
   }
 
+  /**
+   * 重新学习一批知识点：已学过的退回理解阶段，由下一节微课堂换一种讲法重讲。
+   * 还没学会的（未学、理解阶段）本来就会被讲解，跳过。
+   * 知识点还在未完成的一节里等作答或自评时拒绝，避免那一项作答后无法按原阶段更新。
+   */
+  function relearnPoints(knowledgePointIds: string[], now: Date) {
+    const states = loadStates(db);
+    const missing = knowledgePointIds.filter((id) => !states.has(id));
+    if (missing.length > 0) throw new LearningError('知识点不存在', 404);
+    const targets = knowledgePointIds.filter((id) => hasLearned(states.get(id)!.stage));
+
+    const busy = pendingInOpenSession(targets);
+    if (busy.length > 0) throw new LearningError('有知识点还在未完成的一节微课堂里，先完成那一节再重新学习', 409);
+
+    db.transaction((tx) => {
+      for (const id of targets) saveState(tx, id, relearn(states.get(id)!), now);
+    });
+    // 理解阶段需要一项新的讲解，后台补进候选池
+    if (targets.length > 0) enqueue(db, 'fill_pool', { now: now.toISOString() }, now, { dedupe: true });
+    return { relearned: targets };
+  }
+
   // ---------- 内部 ----------
+
+  /** 在未结束的一节里、还没按作答更新记忆状态的知识点 */
+  function pendingInOpenSession(knowledgePointIds: string[]): string[] {
+    if (knowledgePointIds.length === 0) return [];
+    const rows = db
+      .select({ knowledgePointId: items.knowledgePointId, applied: attempts.applied })
+      .from(sessionItems)
+      .innerJoin(sessions, eq(sessionItems.sessionId, sessions.id))
+      .innerJoin(items, eq(sessionItems.itemId, items.id))
+      .leftJoin(attempts, and(eq(attempts.sessionId, sessionItems.sessionId), eq(attempts.itemId, sessionItems.itemId)))
+      .where(and(isNull(sessions.finishedAt), inArray(items.knowledgePointId, knowledgePointIds)))
+      .all();
+    return rows.filter((r) => !r.applied).map((r) => r.knowledgePointId);
+  }
 
   function applyOutcome(attemptId: string, item: ItemRow, outcome: Outcome, now: Date) {
     const states = loadStates(db);
@@ -277,7 +313,7 @@ export function createLearning({ db, model, settings }: LearningDeps) {
     };
   }
 
-  return { startTopic, listTopics, topicMap, nextSession, submitAttempt, rateAttempt, finishSession };
+  return { startTopic, listTopics, topicMap, relearnPoints, nextSession, submitAttempt, rateAttempt, finishSession };
 }
 
 export type Learning = ReturnType<typeof createLearning>;

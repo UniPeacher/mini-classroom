@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { type MapPoint, type MapRecord, type TopicMap, api } from './api';
 import { RichMarkdown } from './RichMarkdown';
 
@@ -12,6 +12,11 @@ const STAGE_LABEL: Record<MapPoint['stage'], string> = {
 const ERROR_LABEL = { misconception: '误解', forgetting: '遗忘' } as const;
 const RATING_LABEL = { hard: '困难', good: '良好', easy: '轻松' } as const;
 
+/** 已学会、可以重新学习的阶段（理解阶段本来就会被重讲） */
+const isLearned = (point: MapPoint) => point.stage === 'recall' || point.stage === 'apply' || point.stage === 'retain';
+
+const RELEARN_CONFIRM = '重新学习会把知识点退回"理解"阶段：下一节微课堂换一种讲法重讲，答对后复习安排从头开始。确定吗？';
+
 const formatTime = (iso: string) =>
   new Date(iso).toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' });
 
@@ -20,15 +25,29 @@ export function TopicMapView({ topicId, onBack }: { topicId: string; onBack: () 
   const [map, setMap] = useState<TopicMap | null>(null);
   const [openId, setOpenId] = useState<string | null>(null);
   const [error, setError] = useState('');
+  const [notice, setNotice] = useState('');
 
-  useEffect(() => {
+  const load = useCallback(() => {
     api.topicMap(topicId).then(setMap, (e: Error) => setError(e.message));
   }, [topicId]);
+  useEffect(load, [load]);
 
-  if (error) return <p className="error">{error}</p>;
-  if (!map) return <p className="muted">加载中…</p>;
+  async function relearnPoints(ids: string[]) {
+    if (!window.confirm(RELEARN_CONFIRM)) return;
+    setNotice('');
+    setError('');
+    try {
+      const { relearned } = await api.relearn(ids);
+      setNotice(`已安排：下一节微课堂会重讲 ${relearned.length} 个知识点。`);
+      load();
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  }
 
-  const learned = map.points.filter((p) => p.stage !== 'unlearned' && p.stage !== 'understand').length;
+  if (!map) return error ? <p className="error">{error}</p> : <p className="muted">加载中…</p>;
+
+  const learned = map.points.filter(isLearned).length;
   const edge = map.points.filter((p) => p.onEdge).length;
 
   return (
@@ -44,6 +63,9 @@ export function TopicMapView({ topicId, onBack }: { topicId: string; onBack: () 
           <p className="muted">
             已学会 {learned} / {map.points.length} 个知识点 · 下一步可学 {edge} 个
           </p>
+          {notice && <p className="notice">{notice}</p>}
+          {error && <p className="error">{error}</p>}
+          <RelearnByDay points={map.points} onRelearn={relearnPoints} />
           <div className="map-grid">
             {map.points.map((point) => (
               <PointCard
@@ -51,6 +73,7 @@ export function TopicMapView({ topicId, onBack }: { topicId: string; onBack: () 
                 point={point}
                 open={openId === point.id}
                 onToggle={() => setOpenId(openId === point.id ? null : point.id)}
+                onRelearn={() => relearnPoints([point.id])}
               />
             ))}
           </div>
@@ -60,7 +83,51 @@ export function TopicMapView({ topicId, onBack }: { topicId: string; onBack: () 
   );
 }
 
-function PointCard({ point, open, onToggle }: { point: MapPoint; open: boolean; onToggle: () => void }) {
+/** 本地时区的日期，用于按天分组作答记录 */
+const dayOf = (iso: string) => new Date(iso).toLocaleDateString('sv-SE');
+const formatDay = (day: string) => new Date(`${day}T00:00:00`).toLocaleDateString('zh-CN', { month: 'long', day: 'numeric', weekday: 'short' });
+
+/** 按日期重新学习：选一天，把那天学过的知识点一起安排重讲 */
+function RelearnByDay({ points, onRelearn }: { points: MapPoint[]; onRelearn: (ids: string[]) => void }) {
+  // 每天学过（有作答记录）的知识点，最近的日期在前
+  const days = new Map<string, MapPoint[]>();
+  for (const point of points) {
+    for (const day of new Set(point.records.map((r) => dayOf(r.at)))) {
+      days.set(day, [...(days.get(day) ?? []), point]);
+    }
+  }
+  const sortedDays = [...days.keys()].sort().reverse();
+  const [selected, setSelected] = useState(sortedDays[0] ?? '');
+  if (sortedDays.length === 0) return null;
+
+  const day = days.has(selected) ? selected : sortedDays[0]!;
+  const dayPoints = days.get(day)!;
+  const learned = dayPoints.filter(isLearned);
+
+  return (
+    <div className="relearn-day">
+      <label>
+        按日期重新学习：
+        <select value={day} onChange={(e) => setSelected(e.target.value)}>
+          {sortedDays.map((d) => (
+            <option key={d} value={d}>
+              {formatDay(d)}（{days.get(d)!.length} 个知识点）
+            </option>
+          ))}
+        </select>
+      </label>
+      <p className="muted">这一天学过：{dayPoints.map((p) => p.title).join('、')}</p>
+      {learned.length > 0 ? (
+        <button onClick={() => onRelearn(learned.map((p) => p.id))}>重新学习其中已学会的 {learned.length} 个</button>
+      ) : (
+        <p className="muted">这些知识点都还没学会，下一节微课堂本来就会重讲。</p>
+      )}
+    </div>
+  );
+}
+
+function PointCard(props: { point: MapPoint; open: boolean; onToggle: () => void; onRelearn: () => void }) {
+  const { point, open, onToggle, onRelearn } = props;
   // 未学且前置还没学会的知识点像被迷雾盖住，淡化显示
   const fog = point.stage === 'unlearned' && !point.onEdge;
   const className = ['point', point.onEdge && 'edge', fog && 'fog', open && 'open'].filter(Boolean).join(' ');
@@ -75,6 +142,8 @@ function PointCard({ point, open, onToggle }: { point: MapPoint; open: boolean; 
         <div className="point-body">
           <p>{point.summary}</p>
           {point.nextReviewAt && <p className="muted">下次复习：{formatTime(point.nextReviewAt)} 之后</p>}
+          {isLearned(point) && <button onClick={onRelearn}>重新学习</button>}
+          {point.stage === 'understand' && <p className="muted">还没学会，下一节微课堂会换一种讲法重讲。</p>}
           {point.records.length === 0 ? (
             <p className="muted">
               {point.onEdge ? '还没学。下一节微课堂会排入它。' : '还没学。先学会它的前置知识点，才会排入微课堂。'}

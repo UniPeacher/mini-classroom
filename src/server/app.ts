@@ -18,6 +18,7 @@ const AttemptBody = z.object({
   answer: z.union([z.object({ choice: z.number().int() }), z.object({ text: z.string() })]),
   durationMs: z.number().int().nonnegative().optional(),
 });
+const RelearnBody = z.object({ knowledgePointIds: z.array(z.string()).min(1, '请选择要重新学习的知识点') });
 const RatingBody = z.object({ selfRating: z.enum(['hard', 'good', 'easy']) });
 
 /** 组装 HTTP 应用；依赖由调用方注入，便于测试。 */
@@ -54,6 +55,11 @@ export function createApp({ learning, clock, devMode, frontendUrl }: AppDeps) {
   });
 
   app.get('/api/topics/:id/map', (c) => c.json(learning.topicMap(c.req.param('id'))));
+
+  app.post('/api/relearn', async (c) => {
+    const { knowledgePointIds } = RelearnBody.parse(await c.req.json());
+    return c.json(learning.relearnPoints(knowledgePointIds, nowOf(c.req.header('X-Dev-Now'))));
+  });
 
   app.post('/api/sessions/next', (c) => c.json(learning.nextSession(nowOf(c.req.header('X-Dev-Now')))));
 
