@@ -1,11 +1,14 @@
 import type { Answer, Learning } from '../server/learning';
 
+/** 经 JSON 传输后的形状：Date 变成 ISO 字符串，其余结构不变 */
+export type Jsonify<T> = T extends Date ? string : T extends object ? { [K in keyof T]: Jsonify<T[K]> } : T;
+
 // 接口返回类型直接取自服务端实现，前后端只维护一份
-export type Topic = ReturnType<Learning['listTopics']>[number];
-export type NextSession = ReturnType<Learning['nextSession']>;
+export type Topic = Jsonify<ReturnType<Learning['listTopics']>[number]>;
+export type NextSession = Jsonify<ReturnType<Learning['nextSession']>>;
 export type Session = NonNullable<NextSession['session']>;
 export type SessionItem = Session['items'][number];
-export type AttemptResult = Awaited<ReturnType<Learning['submitAttempt']>>;
+export type AttemptResult = Jsonify<Awaited<ReturnType<Learning['submitAttempt']>>>;
 export type { Answer };
 
 const DEV_NOW_KEY = 'weiketang.devNow';
