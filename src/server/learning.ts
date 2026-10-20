@@ -22,6 +22,7 @@ import {
 import type { PoolNeed } from '../domain/plan-pool';
 import { chooseNewTopic, revisitDue } from '../domain/topics';
 import { settleWithLimit } from '../jobs/concurrency';
+import { fillPool } from '../jobs/fill-pool';
 import { contextOf, generateItem } from '../jobs/generate-item';
 import { enqueue } from '../jobs/queue';
 import { type Settings, readState, writeState } from '../settings';
@@ -74,6 +75,8 @@ export interface NextSessionOptions {
   device?: 'desktop' | 'mobile';
   /** 用户所在时区，用于判断"今天"已学了几节 */
   timeZone?: string;
+  /** 构建新一节：提前结束未完成的一节；候选池没有可学内容时当场生成 */
+  fresh?: boolean;
 }
 
 /** 联结练习的预估时长（秒） */
@@ -112,11 +115,15 @@ export function createLearning({ db, model, settings: currentSettings }: Learnin
    * 有补充说明时，先按组装规则挑好这一节的内容，再按补充说明逐项重新生成（形式不变）；
    * 某项生成失败就沿用候选池里的原内容，不让这一节因此开不了。
    * 每个新知识点讲完后接一道联结练习（有可联结的对象时）。
+   *
+   * fresh（构建新一节）：不管有没有未完成的一节、候选池备没备好，都现在构建一节——
+   * 未完成的那一节提前结束（没做的项不计入，之后重新安排）；候选池里没有可学的内容时当场生成。
    */
   async function nextSession(now: Date, options: NextSessionOptions = {}) {
     const empty = { session: null, preparing: false, resumed: false, guided: null, capped: false };
     const open = findOpenSession();
-    if (open) return { ...empty, session: viewSession(open.id), resumed: true };
+    if (open && !options.fresh) return { ...empty, session: viewSession(open.id), resumed: true };
+    if (open) finishSession(open.id, now);
 
     const settings = currentSettings();
     if (settings.dailySessionCap !== null && finishedToday(now, options.timeZone) >= settings.dailySessionCap) {
@@ -127,6 +134,10 @@ export function createLearning({ db, model, settings: currentSettings }: Learnin
     const points = loadPoints(db);
     const states = loadStates(db);
     let picked = pickFromPool(now, points, states, mobile, settings).items;
+    if (picked.length === 0 && options.fresh) {
+      await fillPool({ db, model, settings, clock: () => now }, now);
+      picked = pickFromPool(now, loadPoints(db), loadStates(db), mobile, settings).items;
+    }
     if (picked.length === 0) return { ...empty, preparing: hasPendingWork() };
 
     let guided: { applied: number; total: number } | null = null;

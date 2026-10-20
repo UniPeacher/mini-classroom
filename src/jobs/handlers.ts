@@ -1,20 +1,17 @@
 import { randomUUID } from 'node:crypto';
 import { desc, eq, inArray } from 'drizzle-orm';
 import { AiOutputError, type StructuredModel } from '../ai/gateway';
-import { type PointContext, decomposePoint, generateCheatsheet, generateGraph, preparePlacement } from '../ai/generators';
+import { decomposePoint, generateCheatsheet, generateGraph, preparePlacement } from '../ai/generators';
 import { UNLEARNED } from '../domain/memory';
 import { chooseProbePoints } from '../domain/placement';
-import { type PoolNeed, planPool } from '../domain/plan-pool';
 import type { Settings } from '../settings';
 import type { LessonContent } from '../shared/content';
 import type { Db } from '../store/db';
 import {
   addDecomposedPoints,
   getTopic,
-  insertItem,
   loadExistingKnowledge,
   loadPoints,
-  loadPool,
   loadStates,
   markDecomposed,
   markGraphFailed,
@@ -22,8 +19,8 @@ import {
   wasDecomposed,
 } from '../store/repo';
 import { attempts, cheatsheets, connections, existingKnowledge, items, placements, topics } from '../store/schema';
-import { settleWithLimit } from './concurrency';
-import { contextOf, generateItem } from './generate-item';
+import { fillPool } from './fill-pool';
+import { contextOf } from './generate-item';
 import { enqueue } from './queue';
 import type { JobHandlers } from './worker';
 
@@ -62,11 +59,6 @@ export interface CheatsheetScope {
   stages: string[];
 }
 
-/** 提前为 48 小时内到期的复习备好内容 */
-const POOL_HORIZON_MS = 48 * 3600 * 1000;
-/** 候选池常备约两节的量 */
-const SESSIONS_AHEAD = 2;
-
 export function createHandlers(deps: HandlerDeps): JobHandlers {
   const { db, model, clock } = deps;
 
@@ -98,41 +90,7 @@ export function createHandlers(deps: HandlerDeps): JobHandlers {
     fill_pool: {
       async run(payload) {
         const now = (payload as FillPoolPayload).now ? new Date((payload as FillPoolPayload).now!) : clock();
-        const settings = deps.settings();
-        const points = loadPoints(db);
-        const states = loadStates(db);
-        const needs = planPool({
-          points,
-          states,
-          pool: loadPool(db),
-          now,
-          horizonMs: POOL_HORIZON_MS,
-          newCount: SESSIONS_AHEAD * settings.maxNewPerSession,
-          prefs: settings.formPrefs,
-        });
-        const byId = new Map(points.map((p) => [p.id, p]));
-        const known = loadExistingKnowledge(db).map((k) => k.text);
-        const results = await settleWithLimit(
-          needs.map((need) => () => {
-            const ctx = contextOf(byId.get(need.knowledgePointId)!, byId, {
-              state: states.get(need.knowledgePointId) ?? UNLEARNED,
-              existingKnowledge: known,
-            });
-            return fulfill(need, ctx);
-          }),
-          settings.generationConcurrency,
-        );
-        // 单项内容结构始终不合法：丢弃这一项。其他错误（如网络）让整个任务重试；
-        // 已生成的内容已入池，重试时只补缺少的部分
-        let retryable: unknown;
-        results.forEach((result, i) => {
-          if (result.status === 'fulfilled') return;
-          if (result.reason instanceof AiOutputError) {
-            console.warn(`丢弃一项候选内容（${needs[i]!.kind} / ${needs[i]!.knowledgePointId}）：${result.reason.message}`);
-          } else {
-            retryable ??= result.reason;
-          }
-        });
+        const { retryable } = await fillPool({ db, model, settings: deps.settings(), clock }, now);
         if (retryable !== undefined) throw retryable;
       },
     },
@@ -219,10 +177,6 @@ export function createHandlers(deps: HandlerDeps): JobHandlers {
       },
     },
   };
-
-  async function fulfill(need: PoolNeed, ctx: PointContext): Promise<void> {
-    insertItem(db, await generateItem(model, ctx, need), clock());
-  }
 
   /** 摸底准备失败：退回"待开始"，用户可以重试或跳过 */
   function failPlacement(topicId: string) {

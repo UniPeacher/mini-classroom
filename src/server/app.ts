@@ -26,6 +26,7 @@ const NextSessionBody = z.object({
   guidance: z.string().trim().max(500, '补充说明不超过 500 字').optional(),
   device: z.enum(['desktop', 'mobile']).optional(),
   timeZone: z.string().optional(),
+  fresh: z.boolean().optional(),
 });
 const PreviewQuery = z.object({ device: z.enum(['desktop', 'mobile']).optional(), timeZone: z.string().optional() });
 const AttemptBody = z.object({
@@ -98,8 +99,8 @@ export function createApp({ services, clock, devMode, frontendUrl }: AppDeps) {
     return c.json(learning.previewNext(now(c), { device, timeZone }));
   });
   app.post('/api/sessions/next', async (c) => {
-    const { guidance, device, timeZone } = await body(c, NextSessionBody);
-    return c.json(await learning.nextSession(now(c), { guidance: guidance || undefined, device, timeZone }));
+    const { guidance, device, timeZone, fresh } = await body(c, NextSessionBody);
+    return c.json(await learning.nextSession(now(c), { guidance: guidance || undefined, device, timeZone, fresh }));
   });
   app.post('/api/sessions/:id/finish', (c) => c.json(learning.finishSession(c.req.param('id'), now(c))));
   app.post('/api/attempts', async (c) => c.json(await learning.submitAttempt(await body(c, AttemptBody), now(c)), 201));

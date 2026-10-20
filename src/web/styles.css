@@ -146,6 +146,12 @@ a.row-card:hover, button.row-card:hover { border-color: var(--control); }
 .btn.ghost { border-color: transparent; background: transparent; }
 .btn.ghost:hover { background: var(--active); }
 .btn.small { height: 32px; padding: 0 12px; }
+/* 首页主操作：比普通按钮大一级，是问候语之后的第一个落点 */
+.btn.large { height: 46px; padding: 0 22px; font-size: 15px; }
+.btn.selected { background: var(--text); color: var(--primary-ink); border-color: var(--text); }
+.input.large { height: 46px; font-size: 15px; }
+.action-area { margin-top: 28px; max-width: 760px; }
+.composer { max-width: 760px; }
 .btn.danger { color: var(--negative); }
 .btn svg { width: 16px; height: 16px; }
 .field { display: grid; gap: 8px; }

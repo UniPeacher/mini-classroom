@@ -6,7 +6,11 @@ import { usePolling, useResource } from '../hooks';
 import { PURPOSE_LABEL, formatDay } from '../labels';
 import { openReview, routeHash } from '../router';
 
-/** 首页要回答：下一节准备好了吗？现在学什么？ */
+/**
+ * 首页要回答：下一节准备好了吗？现在学什么？
+ * 注意力顺序：问候语说出此刻的一件事 → 紧跟着唯一的主操作（开始/继续/构建）→ 这一节会学什么（依据）
+ * → 今天的提醒 → 学习概况 → 主题与回看。统计数字放在主操作之后，不抢第一眼。
+ */
 export function TodayScreen(props: { topics: Topic[] | null; onTopicsChanged: () => void; onStart: (session: Session, notice?: string) => void }) {
   const { topics, onTopicsChanged, onStart } = props;
   const preview = useResource(() => api.preview(), []);
@@ -23,18 +27,26 @@ export function TodayScreen(props: { topics: Topic[] | null; onTopicsChanged: ()
   }, [reloadPreview, reloadMap, onTopicsChanged]);
   const generating = (topics ?? []).some((t) => t.graphStatus === 'pending' || t.placementStatus === 'preparing') || preview.data?.preparing === true;
   usePolling(generating, refreshAll);
+  const hasTopics = (topics ?? []).length > 0;
 
   return (
     <>
       <Greeting preview={preview.data} topics={topics} />
-      <Tiles preview={preview.data} map={map.data} />
-      <div className="grid top" style={{ marginTop: 16 }}>
-        <section className="panel span-9" aria-labelledby="next-title">
-          <NextSession preview={preview.data} error={preview.error} hasTopics={(topics ?? []).length > 0} onStart={onStart} />
-        </section>
-        <section className="panel span-3" aria-labelledby="slots-title">
-          <Reminders today={today.data} />
-        </section>
+      <ActionArea preview={preview.data} hasTopics={hasTopics} topics={topics} onStart={onStart} onTopicCreated={refreshAll} />
+      {preview.error && <p className="error-text" style={{ marginTop: 12 }}>没能读取下一节：{preview.error}</p>}
+      {hasTopics && (
+        <div className="grid top section-gap">
+          <section className="panel span-9" aria-labelledby="next-title">
+            <NextContents preview={preview.data} />
+          </section>
+          <section className="panel span-3" aria-labelledby="slots-title">
+            <Reminders today={today.data} />
+          </section>
+        </div>
+      )}
+      <h2 className="visually-hidden">学习概况</h2>
+      <div style={{ marginTop: 16 }}>
+        <Tiles preview={preview.data} map={map.data} />
       </div>
       <div className="grid top" style={{ marginTop: 16 }}>
         <section className="panel span-6" aria-labelledby="topics-title">
@@ -59,10 +71,10 @@ function Greeting({ preview, topics }: { preview: Preview | null; topics: Topic[
   else if (preview.open) fact = '上一节还没学完，接着学吧。';
   else if (preview.capped) fact = `今天的 ${preview.dailySessionCap} 节都学完了。`;
   else if (preview.items.length > 0) fact = `下一节已备好：${describeCounts(preview)}。`;
-  else if (preview.preparing) fact = '下一节正在准备。';
-  else fact = '现在没有要学的内容。';
+  else if (preview.preparing) fact = '下一节正在准备，也可以现在就构建。';
+  else fact = '现在没有到期的内容，可以构建新的一节。';
   return (
-    <header style={{ marginBottom: 40 }}>
+    <header>
       <h1 className="greeting">
         {hello}。{fact}
       </h1>
@@ -130,45 +142,157 @@ const GUIDANCE_PRESETS = [
   { label: '多用图解释', text: '每段讲解都配图，用图把机制讲清楚。' },
   { label: '讲得更深入', text: '讲得更深入：多讲背后的原理、边界情况和常见的坑。' },
 ];
-const CUSTOM = 'custom';
 
-/** 下一节：此刻打开会学什么，可选补充说明，一键开始 */
-function NextSession(props: { preview: Preview | null; error: string; hasTopics: boolean; onStart: (session: Session, notice?: string) => void }) {
-  const { preview, error, hasTopics, onStart } = props;
-  const [guidance, setGuidance] = useState('');
-  const [custom, setCustom] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const [startError, setStartError] = useState('');
-  const shown = preview?.items.slice(0, 6) ?? [];
-  const guided = guidance.trim() !== '';
+/**
+ * 主操作区：紧跟问候语，是第一眼之后的落点。任何时候只有一个主按钮：
+ * 有未完成的一节 → 继续；内容已备好 → 开始；没备好 → 现在构建。"构建新一节"是次要操作，
+ * 点开后在原地展开说明框，主按钮换成"构建"，避免两个主按钮抢注意力。
+ */
+function ActionArea(props: {
+  preview: Preview | null;
+  hasTopics: boolean;
+  topics: Topic[] | null;
+  onStart: (session: Session, notice?: string) => void;
+  onTopicCreated: () => void;
+}) {
+  const { preview, hasTopics, topics, onStart, onTopicCreated } = props;
+  const [composing, setComposing] = useState(false);
+  const [busy, setBusy] = useState<'start' | 'build' | null>(null);
+  const [error, setError] = useState('');
 
-  async function start() {
-    setBusy(true);
-    setStartError('');
+  if (topics && !hasTopics) {
+    return (
+      <div className="action-area">
+        <NewTopicForm onCreated={onTopicCreated} primary />
+        <p className="muted" style={{ marginTop: 10 }}>
+          可以是任何领域，比如"TypeScript 常用技能""摄影曝光基础"。系统会拆成知识点，先做 3 分钟摸底，再按你的情况安排每一节。
+        </p>
+      </div>
+    );
+  }
+  if (!preview) return <div className="action-area"><span className="skeleton" style={{ display: 'inline-block', width: 160, height: 38 }} /></div>;
+
+  async function run(kind: 'start' | 'build', guidance?: string) {
+    setBusy(kind);
+    setError('');
     try {
-      const result = await api.nextSession(guided ? guidance.trim() : undefined);
-      if (result.session) onStart(result.session, guidanceNotice(guided, result.resumed, result.guided));
-      else if (result.capped) setStartError('今天已达到每日节数上限。');
-      else setStartError(result.preparing ? '内容还在后台准备，稍等一会儿。' : '现在没有可学的内容。');
+      const result = await api.nextSession({ guidance, fresh: kind === 'build' });
+      if (result.session) onStart(result.session, guidanceNotice(Boolean(guidance), result.resumed, result.guided));
+      else if (result.capped) setError('今天已达到每日节数上限，可以在设置里调整。');
+      else setError(result.preparing ? '内容还在后台准备，稍等一会儿再试。' : '现在没有可学的内容：所有主题都在等摸底、已暂停，或已全部学完。');
     } catch (e) {
-      setStartError((e as Error).message);
+      setError((e as Error).message);
     } finally {
-      setBusy(false);
+      setBusy(null);
     }
   }
 
+  if (composing) {
+    return <Composer open={preview.open} busy={busy === 'build'} error={error} onBuild={(guidance) => run('build', guidance)} onCancel={() => setComposing(false)} />;
+  }
+
+  const remaining = preview.open ? preview.open.items.filter((i) => !i.done).length : 0;
+  const ready = preview.items.length > 0;
+
+  return (
+    <div className="action-area">
+      {preview.capped ? (
+        <p className="muted">
+          今天已学满 {preview.dailySessionCap} 节。想多学可以在<a className="card-link" href={routeHash({ name: 'settings' })}>设置</a>里调高每日上限。
+        </p>
+      ) : (
+        <div className="actions-row" style={{ marginTop: 0 }}>
+          {preview.open ? (
+            <button type="button" className="btn primary large" onClick={() => run('start')} disabled={busy !== null}>
+              {busy === 'start' ? '正在打开…' : `继续这一节 · 还剩 ${remaining} 项`}
+            </button>
+          ) : ready ? (
+            <button type="button" className="btn primary large" onClick={() => run('start')} disabled={busy !== null}>
+              {busy === 'start' ? '正在打开…' : `开始这一节 · 约 ${preview.estMinutes} 分钟`}
+            </button>
+          ) : (
+            <button type="button" className="btn primary large" onClick={() => run('build')} disabled={busy !== null}>
+              {busy === 'build' ? '正在构建，大约半分钟…' : '现在构建一节'}
+            </button>
+          )}
+          <button type="button" className="btn large" onClick={() => setComposing(true)} disabled={busy !== null}>
+            构建新一节…
+          </button>
+        </div>
+      )}
+      <p className="muted small" style={{ marginTop: 10 }}>
+        {preview.open
+          ? '"构建新一节"会提前结束上一节，没做的项之后重新安排。'
+          : ready
+            ? '想换个讲法或侧重点？用"构建新一节"写一句说明，按你的说明重新生成。'
+            : '构建会当场生成这一节的内容，大约需要半分钟到一分钟。'}
+      </p>
+      {error && <p className="error-text" style={{ marginTop: 8 }}>{error}</p>}
+    </div>
+  );
+}
+
+/** 构建新一节：写一句说明引导内容（可选），常用说明一键填入后还能改 */
+function Composer(props: { open: Preview['open']; busy: boolean; error: string; onBuild: (guidance?: string) => void; onCancel: () => void }) {
+  const { open, busy, error, onBuild, onCancel } = props;
+  const [text, setText] = useState('');
+  const guidance = text.trim();
+  return (
+    <section className="panel white action-area composer" aria-labelledby="composer-title">
+      <header>
+        <h2 id="composer-title">构建新一节</h2>
+        <button type="button" className="btn small ghost" onClick={onCancel} disabled={busy}>
+          取消
+        </button>
+      </header>
+      <div className="field">
+        <label htmlFor="composer-text">想让这一节怎么讲？（可选）</label>
+        <span className="hint">知识点按复习和学习进度挑选，说明只改变讲法、例子和出题的角度。</span>
+        <div className="time-chips" style={{ margin: '4px 0' }}>
+          {GUIDANCE_PRESETS.map((p) => (
+            <button key={p.label} type="button" className={`btn small ${text === p.text ? 'selected' : ''}`} aria-pressed={text === p.text} onClick={() => setText(text === p.text ? '' : p.text)} disabled={busy}>
+              {p.label}
+            </button>
+          ))}
+        </div>
+        <textarea
+          id="composer-text"
+          autoFocus
+          className="textarea"
+          rows={3}
+          maxLength={500}
+          value={text}
+          disabled={busy}
+          placeholder="例如：我是后端开发，多用 Node.js 的例子"
+          onChange={(e) => setText(e.target.value)}
+        />
+      </div>
+      {open && <p className="notice" style={{ marginTop: 12 }}>上一节还有 {open.items.filter((i) => !i.done).length} 项没做，构建后上一节提前结束，没做的之后重新安排。</p>}
+      <div className="actions-row">
+        <button type="button" className="btn primary large" onClick={() => onBuild(guidance || undefined)} disabled={busy}>
+          {busy ? (guidance ? '正在按说明生成，大约半分钟到一分钟…' : '正在构建…') : guidance ? '按说明构建' : '直接构建'}
+        </button>
+      </div>
+      {error && <p className="error-text" style={{ marginTop: 8 }}>{error}</p>}
+    </section>
+  );
+}
+
+/** 这一节会学什么：开始前的依据；有未完成的一节时显示它的进度 */
+function NextContents({ preview }: { preview: Preview | null }) {
+  const items = preview?.open ? preview.open.items : (preview?.items.map((i) => ({ ...i, done: false })) ?? []);
+  const shown = items.slice(0, 6);
   return (
     <>
       <header>
         <h2 id="next-title">
-          下一节
-          {preview && preview.items.length > 0 && !preview.open && <span className="chip">约 {preview.estMinutes} 分钟</span>}
+          {preview?.open ? '上一节的进度' : '这一节会学什么'}
+          {preview && !preview.open && preview.items.length > 0 && <span className="chip">约 {preview.estMinutes} 分钟</span>}
         </h2>
         {preview && !preview.open && <span className="meta">时长上限 {preview.budgetMinutes} 分钟</span>}
+        {preview?.open && <span className="meta num">已做 {preview.open.items.filter((i) => i.done).length} / {preview.open.items.length}</span>}
       </header>
-
-      {error && <p className="error-text">没能读取下一节：{error}</p>}
-      {!preview && !error && (
+      {!preview && (
         <div className="rows">
           {[0, 1, 2].map((i) => (
             <div key={i} className="row-card">
@@ -177,32 +301,10 @@ function NextSession(props: { preview: Preview | null; error: string; hasTopics:
           ))}
         </div>
       )}
-      {preview && !hasTopics && <div className="empty">还没有学习主题。在下方"学习主题"里输入一个想学的主题。</div>}
-      {preview?.open && (
-        <>
-          <p className="muted" style={{ marginBottom: 12 }}>
-            上一节开始于 {new Date(preview.open.startedAt).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}，做完了 {preview.open.items.filter((i) => i.done).length} / {preview.open.items.length} 项。
-          </p>
-          <div className="rows">
-            {preview.open.items.map((item, i) => (
-              <div key={i} className="row-card">
-                <span className={`pill ${item.purpose === 'new' ? 'accent' : ''}`}>{PURPOSE_LABEL[item.purpose]}</span>
-                <div className="row-main">
-                  <div className="row-title">{item.title}</div>
-                  <div className="row-sub">
-                    {item.topicTitle} · {item.formLabel}
-                  </div>
-                </div>
-                <span className={`pill ${item.done ? 'pos' : ''}`}>{item.done ? '已做' : '待做'}</span>
-              </div>
-            ))}
-          </div>
-        </>
+      {preview && items.length === 0 && (
+        <div className="empty">{preview.capped ? '今天已学满，明天见。' : preview.preparing ? '内容正在后台准备，好了会自动显示。' : '暂时没有到期的复习，也没有备好的新知识点。'}</div>
       )}
-      {preview && hasTopics && !preview.open && preview.items.length === 0 && (
-        <div className="empty">{preview.capped ? '今天已学满，明天见。' : preview.preparing ? '内容正在后台准备，好了会自动显示。' : '暂时没有到期的复习，也没有可学的新知识点。'}</div>
-      )}
-      {preview && !preview.open && shown.length > 0 && (
+      {shown.length > 0 && (
         <div className="rows">
           {shown.map((item, i) => (
             <div key={i} className="row-card">
@@ -213,58 +315,12 @@ function NextSession(props: { preview: Preview | null; error: string; hasTopics:
                   {item.topicTitle} · {item.formLabel}
                 </div>
               </div>
+              {preview?.open && <span className={`pill ${item.done ? 'pos' : ''}`}>{item.done ? '已做' : '待做'}</span>}
             </div>
           ))}
-          {preview.items.length > shown.length && <p className="muted small">还有 {preview.items.length - shown.length} 项</p>}
+          {items.length > shown.length && <p className="muted small">还有 {items.length - shown.length} 项</p>}
         </div>
       )}
-
-      {preview && (preview.open || (preview.items.length > 0 && !preview.capped)) && (
-        <div className="actions-row" style={{ alignItems: 'flex-end' }}>
-          {!preview.open && (
-            <div className="field" style={{ flex: '1 1 260px' }}>
-              <label htmlFor="guidance">补充说明（可选）</label>
-              <select
-                id="guidance"
-                className="select"
-                disabled={busy}
-                value={custom ? CUSTOM : guidance}
-                onChange={(e) => {
-                  const isCustom = e.target.value === CUSTOM;
-                  setCustom(isCustom);
-                  setGuidance(isCustom ? '' : e.target.value);
-                }}
-              >
-                <option value="">不加，立即开始</option>
-                {GUIDANCE_PRESETS.map((p) => (
-                  <option key={p.label} value={p.text}>
-                    {p.label}
-                  </option>
-                ))}
-                <option value={CUSTOM}>自己写…</option>
-              </select>
-            </div>
-          )}
-          <button type="button" className="btn primary" onClick={start} disabled={busy}>
-            {busy ? (guided ? '正在按补充说明生成…' : '正在打开…') : preview.open ? '继续这一节' : '开始这一节'}
-          </button>
-        </div>
-      )}
-      {custom && (
-        <textarea
-          className="textarea"
-          style={{ marginTop: 12 }}
-          rows={2}
-          maxLength={500}
-          value={guidance}
-          disabled={busy}
-          aria-label="自己写的补充说明"
-          placeholder="例如：我是后端开发，多用 Node.js 的例子"
-          onChange={(e) => setGuidance(e.target.value)}
-        />
-      )}
-      {guided && !busy && <p className="muted small" style={{ marginTop: 8 }}>会按这段说明重新生成本节内容，大约需要半分钟到一分钟。</p>}
-      {startError && <p className="error-text" style={{ marginTop: 8 }}>{startError}</p>}
     </>
   );
 }
@@ -308,25 +364,6 @@ function Reminders({ today }: { today: Today | null }) {
 }
 
 function Topics({ topics, map, onCreated }: { topics: Topic[] | null; map: CognitiveMap | null; onCreated: () => void }) {
-  const [title, setTitle] = useState('');
-  const [error, setError] = useState('');
-  const [busy, setBusy] = useState(false);
-
-  async function create(event: React.FormEvent) {
-    event.preventDefault();
-    setBusy(true);
-    setError('');
-    try {
-      await api.createTopic(title);
-      setTitle('');
-      onCreated();
-    } catch (e) {
-      setError((e as Error).message);
-    } finally {
-      setBusy(false);
-    }
-  }
-
   return (
     <>
       <header>
@@ -363,19 +400,49 @@ function Topics({ topics, map, onCreated }: { topics: Topic[] | null; map: Cogni
           );
         })}
       </div>
-      <form className="actions-row" onSubmit={create}>
+      <div style={{ marginTop: 16 }}>
+        <NewTopicForm onCreated={onCreated} />
+      </div>
+    </>
+  );
+}
+
+/** 添加学习主题；没有任何主题时作为首页的主操作 */
+function NewTopicForm({ onCreated, primary = false }: { onCreated: () => void; primary?: boolean }) {
+  const [title, setTitle] = useState('');
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  async function create(event: React.FormEvent) {
+    event.preventDefault();
+    setBusy(true);
+    setError('');
+    try {
+      await api.createTopic(title);
+      setTitle('');
+      onCreated();
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <>
+      <form className="actions-row" style={{ marginTop: 0 }} onSubmit={create}>
         <input
-          className="input"
-          style={{ flex: '1 1 200px' }}
+          className={`input ${primary ? 'large' : ''}`}
+          style={{ flex: '1 1 240px', maxWidth: primary ? 560 : undefined }}
           value={title}
           maxLength={100}
           onChange={(e) => setTitle(e.target.value)}
           placeholder="想学什么？例如：TypeScript 常用技能"
           aria-label="新的学习主题"
         />
-        <button type="submit" className="btn" disabled={!title.trim() || busy}>
+        <button type="submit" className={`btn ${primary ? 'primary large' : ''}`} disabled={!title.trim() || busy}>
           <Icon name="plus" />
-          添加主题
+          {primary ? '开始学这个主题' : '添加主题'}
         </button>
       </form>
       {error && <p className="error-text" style={{ marginTop: 8 }}>{error}</p>}

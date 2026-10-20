@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { loadPool } from '../../src/store/repo';
-import { items } from '../../src/store/schema';
+import { loadPool, loadStates } from '../../src/store/repo';
+import { items, sessions } from '../../src/store/schema';
+import { MCQ } from '../fixtures/fake-model';
 import { createHarness } from '../fixtures/harness';
 
 const GUIDANCE = '多结合后端开发的真实例子';
@@ -67,5 +68,47 @@ describe('带补充说明开始一节', () => {
 
     const fresh = await ready();
     expect((await fresh.call('POST', '/api/sessions/next', { guidance: '长'.repeat(501) })).status).toBe(400);
+  });
+});
+
+/**
+ * 构建新一节：不管有没有未完成的一节、候选池备没备好，都现在构建。
+ * 未完成的一节提前结束（答过的照常计入，没做的不计入）；候选池没有可学内容时当场生成。
+ */
+describe('构建新一节', () => {
+  it('有未完成的一节时，提前结束它，再构建新的一节', async () => {
+    const { call, db, startTopic } = createHarness();
+    await startTopic();
+    const old = (await call('POST', '/api/sessions/next')).body.session;
+    await call('POST', '/api/attempts', { sessionId: old.id, itemId: old.items[0].id, answer: { choice: MCQ.answerIndex } });
+
+    const res = (await call('POST', '/api/sessions/next', { fresh: true })).body;
+    expect(res).toMatchObject({ resumed: false });
+    expect(res.session.id).not.toBe(old.id);
+    const finished = db.select().from(sessions).all().find((s) => s.id === old.id)!;
+    expect(finished.finishedAt).not.toBeNull();
+    // 答对未自评的一项按"良好"计入
+    expect(loadStates(db).get(old.items[0].knowledgePointId)?.stage).toBe('recall');
+  });
+
+  it('候选池里没有可学的内容时当场生成；不构建时只能等后台准备', async () => {
+    const { call, db, calls, startTopic } = createHarness();
+    await startTopic();
+    db.update(items).set({ status: 'void' }).run(); // 候选池清空
+    expect((await call('POST', '/api/sessions/next')).body.session).toBeNull();
+
+    const before = calls.length;
+    const res = (await call('POST', '/api/sessions/next', { fresh: true })).body;
+    expect(res.session.items.length).toBeGreaterThan(0);
+    expect(calls.length).toBeGreaterThan(before);
+  });
+
+  it('构建时可以带补充说明', async () => {
+    const { call, prompts, startTopic } = createHarness();
+    await startTopic();
+    const before = prompts.length;
+    const res = (await call('POST', '/api/sessions/next', { fresh: true, guidance: GUIDANCE })).body;
+    expect(res.guided).toEqual({ applied: res.session.items.length, total: res.session.items.length });
+    for (const prompt of prompts.slice(before)) expect(prompt).toContain(GUIDANCE);
   });
 });

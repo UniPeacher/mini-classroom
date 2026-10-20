@@ -100,8 +100,9 @@ export const api = {
   skipPlacement: (topicId: string) => request<PlacementState>('POST', `/api/topics/${topicId}/placement/skip`),
 
   preview: () => request<Preview>('GET', `/api/sessions/preview?${query({ device: currentDevice(), timeZone })}`),
-  nextSession: (guidance?: string) =>
-    request<NextSession>('POST', '/api/sessions/next', { guidance, device: currentDevice(), timeZone }),
+  /** 开始下一节；fresh 为构建新一节（提前结束未完成的一节，没备好内容时当场生成） */
+  nextSession: (options: { guidance?: string; fresh?: boolean } = {}) =>
+    request<NextSession>('POST', '/api/sessions/next', { ...options, device: currentDevice(), timeZone }),
   submitAttempt: (body: { sessionId: string; itemId: string; answer: Answer; durationMs: number }) =>
     request<AttemptResult>('POST', '/api/attempts', body),
   rate: (attemptId: string, selfRating: 'hard' | 'good' | 'easy') =>
