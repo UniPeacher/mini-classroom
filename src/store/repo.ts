@@ -107,7 +107,14 @@ export function insertItem(
 /** 候选池中可用的内容 */
 export function loadPool(db: Executor): PoolItem[] {
   return db
-    .select({ id: items.id, knowledgePointId: items.knowledgePointId, kind: items.kind, form: items.form, estSeconds: items.estSeconds })
+    .select({
+      id: items.id,
+      knowledgePointId: items.knowledgePointId,
+      kind: items.kind,
+      form: items.form,
+      questionForm: items.questionForm,
+      estSeconds: items.estSeconds,
+    })
     .from(items)
     .where(eq(items.status, 'pooled'))
     .all();

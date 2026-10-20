@@ -6,7 +6,10 @@ export interface PoolItem {
   id: string;
   knowledgePointId: string;
   kind: 'lesson' | 'review';
+  /** lesson 为讲解形式，review 为题目形式 */
   form: string;
+  /** 题目形式：lesson 是当场小题的形式，review 与 form 相同 */
+  questionForm: string;
   estSeconds: number;
 }
 

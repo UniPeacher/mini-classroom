@@ -68,6 +68,8 @@ describe('验收：从新建主题到第二节微课堂', () => {
     );
     expect(newOnes.length).toBeGreaterThanOrEqual(1);
     expect(newOnes.every((i: any) => i.purpose === 'new')).toBe(true);
+    // 同一节里的多个新知识点，小题形式交替出现
+    if (newOnes.length >= 2) expect(new Set(newOnes.map((i: any) => i.question.type)).size).toBe(2);
   });
 });
 

@@ -33,6 +33,7 @@ const review = (kp: string, form = 'short_answer', estSeconds = 60): PoolItem =>
   knowledgePointId: kp,
   kind: 'review',
   form,
+  questionForm: form,
   estSeconds,
 });
 const lesson = (kp: string, form = 'explain_direct', estSeconds = 180): PoolItem => ({
@@ -40,6 +41,7 @@ const lesson = (kp: string, form = 'explain_direct', estSeconds = 180): PoolItem
   knowledgePointId: kp,
   kind: 'lesson',
   form,
+  questionForm: 'mcq',
   estSeconds,
 });
 

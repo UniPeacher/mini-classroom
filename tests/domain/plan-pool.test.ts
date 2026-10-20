@@ -16,11 +16,12 @@ function recallDueIn(hours: number, lastQuestionForm = 'mcq'): MemoryState {
   return { stage: 'recall', card, lastExplainForm: 'explain_direct', lastQuestionForm };
 }
 
-const item = (knowledgePointId: string, kind: PoolItem['kind'], form: string): PoolItem => ({
+const item = (knowledgePointId: string, kind: PoolItem['kind'], form: string, questionForm = form): PoolItem => ({
   id: `${knowledgePointId}-${kind}-${form}`,
   knowledgePointId,
   kind,
   form,
+  questionForm,
   estSeconds: 60,
 });
 
@@ -33,6 +34,23 @@ describe('候选池补充规划', () => {
       { kind: 'lesson', knowledgePointId: 'b', explainForm: 'explain_direct', questionForm: 'short_answer' },
       { kind: 'lesson', knowledgePointId: 'c', explainForm: 'explain_direct', questionForm: 'mcq' },
       { kind: 'lesson', knowledgePointId: 'd', explainForm: 'explain_direct', questionForm: 'short_answer' },
+    ]);
+  });
+
+  it('新补的小题形式与边缘上前一个已备好的知识点错开', () => {
+    // 场景：a 上次已备好选择题，这次补 b、c
+    const points = [point('a', 1), point('b', 2), point('c', 3)];
+    const pool = [item('a', 'lesson', 'explain_direct', 'mcq')];
+    const forms = planPool({ ...base, points, states: new Map(), pool }).map((n) => n.questionForm);
+    expect(forms).toEqual(['short_answer', 'mcq']);
+  });
+
+  it('新知识点插在已备好的知识点前面时，与后一个错开', () => {
+    // 场景：学会前置后，排序更靠前的 a 新进入边缘，b 上次已备好选择题
+    const points = [point('a', 1), point('b', 2)];
+    const pool = [item('b', 'lesson', 'explain_direct', 'mcq')];
+    expect(planPool({ ...base, points, states: new Map(), pool })).toEqual([
+      { kind: 'lesson', knowledgePointId: 'a', explainForm: 'explain_direct', questionForm: 'short_answer' },
     ]);
   });
 

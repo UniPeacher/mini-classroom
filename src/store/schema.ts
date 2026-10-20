@@ -51,7 +51,10 @@ export const items = sqliteTable('items', {
   knowledgePointId: text('knowledge_point_id').notNull().references(() => knowledgePoints.id),
   // lesson：讲解 + 当场小题；review：复习题
   kind: text('kind', { enum: ['lesson', 'review'] }).notNull(),
+  // lesson 为讲解形式，review 为题目形式
   form: text('form').notNull(),
+  // 题目形式：lesson 是当场小题的形式，review 与 form 相同
+  questionForm: text('question_form').notNull(),
   content: text('content', { mode: 'json' }).notNull(),
   estSeconds: integer('est_seconds').notNull(),
   status: text('status', { enum: ['pooled', 'used', 'void'] }).notNull().default('pooled'),

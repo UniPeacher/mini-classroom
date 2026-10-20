@@ -23,7 +23,8 @@ export interface PlanPoolInput {
  * 规划候选池要补哪些内容，目标是常备约两节的量：
  * - 即将到期（horizon 内）的复习：每个知识点备一项与上次形式不同的复习题；
  * - 理解阶段的知识点：备一项与上次讲解形式不同的重讲；
- * - 认知边缘上靠前的新知识点：各备一项讲解，当场小题在两种形式间交替。
+ * - 认知边缘上靠前的新知识点：各备一项讲解，当场小题的形式与边缘上相邻的知识点错开，
+ *   这样组装时按边缘顺序取出的新知识点，小题形式自然交替。
  * 候选池里已有可用内容的，不重复生成。
  */
 export function planPool(input: PlanPoolInput): PoolNeed[] {
@@ -50,17 +51,21 @@ export function planPool(input: PlanPoolInput): PoolNeed[] {
     }
   }
 
-  cognitiveEdge(points, states)
-    .slice(0, newCount)
-    .forEach((p, index) => {
-      if (has(p.id, 'lesson', null)) return;
-      needs.push({
-        kind: 'lesson',
-        knowledgePointId: p.id,
-        explainForm: EXPLAIN_FORMS[0],
-        questionForm: QUESTION_FORMS[index % QUESTION_FORMS.length]!,
-      });
-    });
+  const edge = cognitiveEdge(points, states).slice(0, newCount);
+  // 边缘上每个知识点已备讲解的小题形式；没备的为 null，下面依次补上
+  const forms = edge.map((p) => pool.find((i) => i.knowledgePointId === p.id && i.kind === 'lesson')?.questionForm ?? null);
+  edge.forEach((p, i) => {
+    if (forms[i] !== null) return;
+    const questionForm = alternateForm(forms[i - 1] ?? null, forms[i + 1] ?? null);
+    forms[i] = questionForm;
+    needs.push({ kind: 'lesson', knowledgePointId: p.id, explainForm: EXPLAIN_FORMS[0], questionForm });
+  });
 
   return needs;
+}
+
+/** 与前一个相邻知识点的形式错开；没有前一个时，与后一个错开。 */
+function alternateForm(previous: string | null, next: string | null): QuestionForm {
+  const neighbor = previous ?? next;
+  return neighbor === null ? QUESTION_FORMS[0] : nextForm(QUESTION_FORMS, neighbor);
 }

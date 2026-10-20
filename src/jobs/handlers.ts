@@ -97,10 +97,18 @@ export function createHandlers(deps: HandlerDeps): JobHandlers {
   async function fulfill(need: PoolNeed, ctx: PointContext): Promise<void> {
     if (need.kind === 'lesson') {
       const { estSeconds, ...content } = await generateLesson(model, ctx, need);
-      insertItem(db, { knowledgePointId: need.knowledgePointId, kind: 'lesson', form: need.explainForm, estSeconds, content }, clock());
+      insertItem(
+        db,
+        { knowledgePointId: need.knowledgePointId, kind: 'lesson', form: need.explainForm, questionForm: need.questionForm, estSeconds, content },
+        clock(),
+      );
     } else {
       const { estSeconds, ...content } = await generateReview(model, ctx, need.questionForm);
-      insertItem(db, { knowledgePointId: need.knowledgePointId, kind: 'review', form: need.questionForm, estSeconds, content }, clock());
+      insertItem(
+        db,
+        { knowledgePointId: need.knowledgePointId, kind: 'review', form: need.questionForm, questionForm: need.questionForm, estSeconds, content },
+        clock(),
+      );
     }
   }
 }
