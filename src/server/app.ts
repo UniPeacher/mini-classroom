@@ -7,6 +7,8 @@ export interface AppDeps {
   clock: () => Date;
   /** 开发模式下允许用 X-Dev-Now 请求头覆盖当前时间，用于验收"第二天" */
   devMode: boolean;
+  /** 前端页面地址；直接打开服务端根路径时跳转过去。未知时返回 null */
+  frontendUrl?: () => string | null;
 }
 
 const TopicBody = z.object({ title: z.string().trim().min(1, '请输入学习主题') });
@@ -19,7 +21,7 @@ const AttemptBody = z.object({
 const RatingBody = z.object({ selfRating: z.enum(['hard', 'good', 'easy']) });
 
 /** 组装 HTTP 应用；依赖由调用方注入，便于测试。 */
-export function createApp({ learning, clock, devMode }: AppDeps) {
+export function createApp({ learning, clock, devMode, frontendUrl }: AppDeps) {
   const app = new Hono();
 
   const nowOf = (header: string | undefined) => {
@@ -34,6 +36,12 @@ export function createApp({ learning, clock, devMode }: AppDeps) {
     if (error instanceof z.ZodError) return c.json({ error: error.issues.map((i) => i.message).join('；') }, 400);
     console.error(error);
     return c.json({ error: '服务内部错误' }, 500);
+  });
+
+  // 服务端只提供 /api 接口；有人直接打开服务端地址时，带去前端页面而不是显示 404
+  app.get('/', (c) => {
+    const url = frontendUrl?.() ?? null;
+    return url ? c.redirect(url) : c.text('这是微课堂的接口服务，页面请打开前端地址（start.sh 启动时会打印）。');
   });
 
   app.get('/api/health', (c) => c.json({ ok: true, devMode }));

@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { modelFromEnv } from '../ai/gateway';
 import { createHandlers } from '../jobs/handlers';
@@ -15,6 +15,7 @@ if (existsSync('.env')) process.loadEnvFile('.env');
 // 运行时文件目录：记录实际监听的端口，供前端转发和启停脚本读取
 const RUN_DIR = '.run';
 const PORT_FILE = join(RUN_DIR, 'server.port');
+const WEB_PORT_FILE = join(RUN_DIR, 'web.port');
 
 const clock = () => new Date();
 const db = openDb(process.env.DB_PATH ?? 'data/weiketang.sqlite');
@@ -31,7 +32,13 @@ refreshPool();
 const refreshTimer = setInterval(refreshPool, POOL_REFRESH_MS);
 
 const learning = createLearning({ db, model, settings });
-const app = createApp({ learning, clock, devMode: process.env.DEV_MODE === 'true' });
+const app = createApp({
+  learning,
+  clock,
+  devMode: process.env.DEV_MODE === 'true',
+  // 前端端口可能已顺延，以前端写下的端口文件为准
+  frontendUrl: () => (existsSync(WEB_PORT_FILE) ? `http://127.0.0.1:${readFileSync(WEB_PORT_FILE, 'utf8').trim()}` : null),
+});
 
 // 只监听本机（第一版不做登录）；首选端口被占用时自动顺延
 const preferredPort = Number(process.env.PORT ?? 6201);

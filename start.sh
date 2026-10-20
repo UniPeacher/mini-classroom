@@ -54,7 +54,6 @@ launch() {
 launch server node --import tsx src/server/main.ts
 launch web node node_modules/vite/bin/vite.js
 
-echo "微课堂已启动："
-echo "  前端  http://127.0.0.1:$(cat "$RUN_DIR/web.port")"
-echo "  服务端 http://127.0.0.1:$(cat "$RUN_DIR/server.port")"
-echo "  日志  $RUN_DIR/server.log、$RUN_DIR/web.log"
+echo "微课堂已启动，请在浏览器打开：http://127.0.0.1:$(cat "$RUN_DIR/web.port")"
+echo "  接口服务：http://127.0.0.1:$(cat "$RUN_DIR/server.port")（供页面调用，无需打开）"
+echo "  日志：$RUN_DIR/server.log、$RUN_DIR/web.log"
