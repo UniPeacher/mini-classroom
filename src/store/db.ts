@@ -20,3 +20,6 @@ export function openDb(path: string) {
 }
 
 export type Db = ReturnType<typeof openDb>;
+
+/** 数据库或事务：数据访问函数两者都接受，便于在事务中组合调用 */
+export type Executor = Db | Parameters<Parameters<Db['transaction']>[0]>[0];

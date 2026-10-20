@@ -1,13 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { createApp } from '../src/server/app';
 import { openDb } from '../src/store/db';
 import { topics } from '../src/store/schema';
+import { createHarness } from './fixtures/harness';
 
 describe('脚手架', () => {
   it('健康检查接口返回 ok', async () => {
-    const res = await createApp().request('/api/health');
-    expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ ok: true });
+    const { call } = createHarness();
+    expect(await call('GET', '/api/health')).toEqual({ status: 200, body: { ok: true } });
   });
 
   it('内存数据库执行迁移后可以读写', () => {

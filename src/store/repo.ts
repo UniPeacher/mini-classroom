@@ -4,27 +4,27 @@ import type { PoolItem } from '../domain/assemble';
 import type { GraphPoint } from '../domain/edge';
 import { type MemoryState, reviveCard } from '../domain/memory';
 import type { Graph, LessonContent, ReviewContent } from '../shared/content';
-import type { Db } from './db';
+import type { Executor } from './db';
 import { items, knowledgePoints, memoryStates, relations, topics } from './schema';
 
 // ---------- 学习主题与知识图谱 ----------
 
-export function createTopic(db: Db, title: string, now: Date): string {
+export function createTopic(db: Executor, title: string, now: Date): string {
   const id = randomUUID();
   db.insert(topics).values({ id, title, createdAt: now }).run();
   return id;
 }
 
-export function getTopic(db: Db, id: string) {
+export function getTopic(db: Executor, id: string) {
   return db.select().from(topics).where(eq(topics.id, id)).get();
 }
 
-export function markGraphFailed(db: Db, topicId: string): void {
+export function markGraphFailed(db: Executor, topicId: string): void {
   db.update(topics).set({ graphStatus: 'failed' }).where(eq(topics.id, topicId)).run();
 }
 
 /** 保存骨架图谱：知识点、关系，以及每个知识点的初始记忆状态（未学）。 */
-export function saveGraph(db: Db, topicId: string, graph: Graph, now: Date): void {
+export function saveGraph(db: Executor, topicId: string, graph: Graph, now: Date): void {
   db.transaction((tx) => {
     const idOf = new Map(graph.knowledgePoints.map((k) => [k.key, randomUUID()]));
     graph.knowledgePoints.forEach((k, position) => {
@@ -49,7 +49,7 @@ export interface PointInfo extends GraphPoint {
 }
 
 /** 加载所有进行中主题的知识点（切片 1 不区分主题优先级）。 */
-export function loadPoints(db: Db): PointInfo[] {
+export function loadPoints(db: Executor): PointInfo[] {
   const rows = db
     .select({ point: knowledgePoints, topicTitle: topics.title })
     .from(knowledgePoints)
@@ -73,7 +73,7 @@ export function loadPoints(db: Db): PointInfo[] {
 
 // ---------- 记忆状态 ----------
 
-export function loadStates(db: Db): Map<string, MemoryState> {
+export function loadStates(db: Executor): Map<string, MemoryState> {
   const rows = db.select().from(memoryStates).all();
   return new Map(
     rows.map((r) => [
@@ -83,7 +83,7 @@ export function loadStates(db: Db): Map<string, MemoryState> {
   );
 }
 
-export function saveState(db: Db, knowledgePointId: string, state: MemoryState, now: Date): void {
+export function saveState(db: Executor, knowledgePointId: string, state: MemoryState, now: Date): void {
   db.update(memoryStates)
     .set({ ...state, updatedAt: now })
     .where(eq(memoryStates.knowledgePointId, knowledgePointId))
@@ -95,7 +95,7 @@ export function saveState(db: Db, knowledgePointId: string, state: MemoryState, 
 export type ItemContent = LessonContent | ReviewContent;
 
 export function insertItem(
-  db: Db,
+  db: Executor,
   item: Omit<PoolItem, 'id'> & { content: ItemContent },
   now: Date,
 ): string {
@@ -105,7 +105,7 @@ export function insertItem(
 }
 
 /** 候选池中可用的内容 */
-export function loadPool(db: Db): PoolItem[] {
+export function loadPool(db: Executor): PoolItem[] {
   return db
     .select({ id: items.id, knowledgePointId: items.knowledgePointId, kind: items.kind, form: items.form, estSeconds: items.estSeconds })
     .from(items)
@@ -113,12 +113,12 @@ export function loadPool(db: Db): PoolItem[] {
     .all();
 }
 
-export function getItems(db: Db, ids: string[]) {
+export function getItems(db: Executor, ids: string[]) {
   if (ids.length === 0) return [];
   return db.select().from(items).where(inArray(items.id, ids)).all();
 }
 
-export function markItemsUsed(db: Db, ids: string[]): void {
+export function markItemsUsed(db: Executor, ids: string[]): void {
   if (ids.length === 0) return;
   db.update(items).set({ status: 'used' }).where(inArray(items.id, ids)).run();
 }
