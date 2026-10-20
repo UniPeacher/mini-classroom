@@ -13,8 +13,7 @@ const NEXT_DAY = new Date(LATE_NIGHT.getTime() + DAY);
 async function twoDaysLearned() {
   const harness = createHarness();
   const { call, worker } = harness;
-  const { topicId } = (await call('POST', '/api/topics', { title: 'TypeScript 常用技能' }, LATE_NIGHT)).body;
-  await worker.runUntilIdle();
+  const topicId = await harness.startTopic('TypeScript 常用技能', { now: LATE_NIGHT });
 
   const answerAll = async (now: Date) => {
     const session = (await call('POST', '/api/sessions/next', undefined, now)).body.session;
@@ -29,8 +28,7 @@ async function twoDaysLearned() {
   const first = await answerAll(LATE_NIGHT);
   const second = await answerAll(NEXT_DAY);
   // 学完之后才新建的主题，没有任何学习记录
-  const other = (await call('POST', '/api/topics', { title: '没学过的主题' }, NEXT_DAY)).body.topicId;
-  await worker.runUntilIdle();
+  const other = await harness.startTopic('没学过的主题', { now: NEXT_DAY });
   return { ...harness, topicId, other, first, second };
 }
 

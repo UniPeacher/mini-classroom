@@ -1,44 +1,89 @@
 import { randomUUID } from 'node:crypto';
-import { type SQL, and, asc, eq, gte, inArray, isNull, lt } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, isNotNull, isNull, ne } from 'drizzle-orm';
 import type { StructuredModel } from '../ai/gateway';
-import { gradeShortAnswer } from '../ai/generators';
+import { gradeConnection, gradeOpenAnswer, judgeAppeal } from '../ai/generators';
 import { type PoolItem, assemble } from '../domain/assemble';
+import { timeFactor } from '../domain/calibration';
 import { cognitiveEdge } from '../domain/edge';
-import type { ExplainForm, QuestionForm } from '../domain/forms';
-import { gradeMcq } from '../domain/grading';
-import { type Outcome, type SelfRating, UNLEARNED, applyLessonOutcome, applyReviewOutcome, hasLearned, relearn } from '../domain/memory';
+import { CONTRAST_FORM, type ExplainForm, type QuestionForm, isMobileForm } from '../domain/forms';
+import { gradeMcq, gradePickLine, misconceptionOf } from '../domain/grading';
+import {
+  DECOMPOSE_FAIL_STREAK,
+  type MemoryState,
+  type Outcome,
+  type SelfRating,
+  UNLEARNED,
+  applyLessonOutcome,
+  applyReviewOutcome,
+  hasLearned,
+  hasSchedule,
+  needsDecomposition,
+} from '../domain/memory';
 import type { PoolNeed } from '../domain/plan-pool';
+import { chooseNewTopic, revisitDue } from '../domain/topics';
 import { settleWithLimit } from '../jobs/concurrency';
 import { contextOf, generateItem } from '../jobs/generate-item';
 import { enqueue } from '../jobs/queue';
-import type { Settings } from '../settings';
-import type { Grade, LessonContent, Question, ReviewContent } from '../shared/content';
+import { type Settings, readState, writeState } from '../settings';
+import { type ConnectionContent, type Grade, type Question, isOpenQuestion } from '../shared/content';
 import type { Db } from '../store/db';
-import { createTopic, getItems, getTopic, insertItem, loadPoints, loadPool, loadStates, markItemsUsed, saveState } from '../store/repo';
-import { attempts, items, jobs, knowledgePoints, sessionItems, sessions, topics } from '../store/schema';
+import {
+  type PointInfo,
+  createTopic,
+  getItems,
+  getTopic,
+  insertItem,
+  loadExistingKnowledge,
+  loadPoints,
+  loadPool,
+  loadStates,
+  markItemsUsed,
+  saveState,
+  wasDecomposed,
+} from '../store/repo';
+import { attempts, connections, items, jobs, sessionItems, sessions, topics } from '../store/schema';
+import {
+  type Answer,
+  type Appeal,
+  type ItemRow,
+  LearningError,
+  SERVER_TIME_ZONE,
+  dayFormatter,
+  formLabel,
+  itemBody,
+  questionOf,
+  reveal,
+  stateFromJson,
+} from './views';
+
+export { type Answer, LearningError } from './views';
 
 export interface LearningDeps {
   db: Db;
   model: StructuredModel;
-  settings: Settings;
+  /** 每次读取最新设置：设置页改动后立即生效 */
+  settings: () => Settings;
 }
 
-/** 业务错误：由接口层转成 4xx */
-export class LearningError extends Error {
-  constructor(
-    message: string,
-    readonly status: 400 | 404 | 409,
-  ) {
-    super(message);
-  }
+/** 这一项在本节中的用途 */
+export type ItemPurpose = (typeof sessionItems.$inferSelect)['purpose'];
+
+export interface NextSessionOptions {
+  /** 补充说明：按它重新生成本节内容 */
+  guidance?: string;
+  device?: 'desktop' | 'mobile';
+  /** 用户所在时区，用于判断"今天"已学了几节 */
+  timeZone?: string;
 }
 
-export type Answer = { choice: number } | { text: string };
+/** 联结练习的预估时长（秒） */
+const CONNECTION_SECONDS = 90;
+const LAST_REVISIT_KEY = 'last_topic_revisit';
 
-type ItemRow = typeof items.$inferSelect;
+/** 学习流程：学习主题、开始一节、作答、自评、申诉、结束、主题回访。 */
+export function createLearning({ db, model, settings: currentSettings }: LearningDeps) {
+  // ---------- 学习主题 ----------
 
-/** 学习流程：新建主题、开始一节、作答、自评、结束。 */
-export function createLearning({ db, model, settings }: LearningDeps) {
   function startTopic(title: string, now: Date) {
     const topicId = createTopic(db, title, now);
     enqueue(db, 'generate_graph', { topicId }, now);
@@ -49,46 +94,90 @@ export function createLearning({ db, model, settings }: LearningDeps) {
     return db.select().from(topics).orderBy(asc(topics.createdAt)).all();
   }
 
+  /** 暂停或恢复主题、调整优先级。暂停的主题不再新学，复习照常进行。 */
+  function updateTopic(topicId: string, patch: { status?: 'active' | 'paused'; priority?: number }, now: Date) {
+    const topic = getTopic(db, topicId);
+    if (!topic) throw new LearningError('学习主题不存在', 404);
+    db.update(topics).set(patch).where(eq(topics.id, topicId)).run();
+    // 恢复的主题需要备新学内容
+    if (patch.status === 'active' && topic.status === 'paused') enqueue(db, 'fill_pool', { now: now.toISOString() }, now, { dedupe: true });
+    return getTopic(db, topicId)!;
+  }
+
+  // ---------- 开始一节 ----------
+
   /**
    * 开始下一节：有未结束的就继续它；否则从候选池按组装规则挑选。
    * 没有补充说明时只读候选池、不调用 AI，即时返回。
    * 有补充说明时，先按组装规则挑好这一节的内容，再按补充说明逐项重新生成（形式不变）；
    * 某项生成失败就沿用候选池里的原内容，不让这一节因此开不了。
+   * 每个新知识点讲完后接一道联结练习（有可联结的对象时）。
    */
-  async function nextSession(now: Date, guidance?: string) {
+  async function nextSession(now: Date, options: NextSessionOptions = {}) {
+    const empty = { session: null, preparing: false, resumed: false, guided: null, capped: false };
     const open = findOpenSession();
-    if (open) return { session: viewSession(open.id), preparing: false, resumed: true, guided: null };
+    if (open) return { ...empty, session: viewSession(open.id), resumed: true };
 
+    const settings = currentSettings();
+    if (settings.dailySessionCap !== null && finishedToday(now, options.timeZone) >= settings.dailySessionCap) {
+      return { ...empty, capped: true };
+    }
+
+    const mobile = options.device === 'mobile';
+    const points = loadPoints(db);
+    const states = loadStates(db);
+    const pool = loadPool(db);
     let picked = assemble({
-      points: loadPoints(db),
-      states: loadStates(db),
-      pool: loadPool(db),
+      points,
+      states,
+      pool,
       now,
       budgetSeconds: settings.budgetSeconds,
       maxNewPerSession: settings.maxNewPerSession,
+      newTopicId: chooseTopicForNew(points, states, pool, mobile),
+      mobile,
+      timeFactor: currentTimeFactor(),
     }).items;
-    if (picked.length === 0) return { session: null, preparing: hasPendingWork(), resumed: false, guided: null };
+    if (picked.length === 0) return { ...empty, preparing: hasPendingWork() };
 
     let guided: { applied: number; total: number } | null = null;
-    if (guidance) {
-      const result = await regenerate(picked, guidance, now);
+    if (options.guidance) {
+      const result = await regenerate(picked, options.guidance, now);
       picked = result.items;
       guided = { applied: result.applied, total: picked.length };
       // 生成要等一会儿；这期间如果已经开了别的一节（例如重复点击），以那一节为准
       const opened = findOpenSession();
-      if (opened) return { session: viewSession(opened.id), preparing: false, resumed: true, guided: null };
+      if (opened) return { ...empty, session: viewSession(opened.id), resumed: true };
     }
+
+    const byId = new Map(points.map((p) => [p.id, p]));
+    const entries = withConnections(
+      picked.map((item) => ({ itemId: item.id, purpose: purposeOf(item, states.get(item.knowledgePointId) ?? UNLEARNED) })),
+      picked,
+      byId,
+      states,
+      now,
+    );
+    const firstNew = entries.find((e) => e.purpose === 'new');
+    const newTopicId = firstNew ? (byId.get(picked.find((i) => i.id === firstNew.itemId)!.knowledgePointId)?.topicId ?? null) : null;
 
     const sessionId = randomUUID();
     db.transaction((tx) => {
-      tx.insert(sessions).values({ id: sessionId, startedAt: now, budgetSeconds: settings.budgetSeconds }).run();
-      picked.forEach((item, position) => tx.insert(sessionItems).values({ sessionId, itemId: item.id, position }).run());
+      tx.insert(sessions)
+        .values({ id: sessionId, startedAt: now, budgetSeconds: settings.budgetSeconds, newTopicId, device: mobile ? 'mobile' : 'desktop', guidance: options.guidance ?? null })
+        .run();
+      entries.forEach((entry, position) => tx.insert(sessionItems).values({ sessionId, itemId: entry.itemId, position, purpose: entry.purpose }).run());
       markItemsUsed(tx, picked.map((i) => i.id));
     });
-    return { session: viewSession(sessionId), preparing: false, resumed: false, guided };
+    return { ...empty, session: viewSession(sessionId), guided };
   }
 
-  /** 提交作答：选择题按规则判分，简答由 AI 批改。答错时立即更新记忆状态；答对时等自评。 */
+  // ---------- 作答 ----------
+
+  /**
+   * 提交作答：选择题、点选错误行按规则判分，简答、补全、修正和联结练习由 AI 批改。
+   * 答错时立即更新记忆状态；答对时等自评。联结练习不计入记忆状态。
+   */
   async function submitAttempt(input: { sessionId: string; itemId: string; answer: Answer; durationMs?: number }, now: Date) {
     const item = requireSessionItem(input.sessionId, input.itemId);
     const exists = db
@@ -98,7 +187,9 @@ export function createLearning({ db, model, settings }: LearningDeps) {
       .get();
     if (exists) throw new LearningError('这一项已经作答过了', 409);
 
-    const question = questionOf(item);
+    if (item.kind === 'connection') return submitConnection(item, input, now);
+
+    const question = questionOf(item)!;
     const grade = await gradeAnswer(item, question, input.answer);
     const attemptId = randomUUID();
     db.insert(attempts)
@@ -114,8 +205,64 @@ export function createLearning({ db, model, settings }: LearningDeps) {
         createdAt: now,
       })
       .run();
-    if (!grade.correct) applyOutcome(attemptId, item, { correct: false }, now);
+    if (!grade.correct) {
+      const misconception = question.type === 'mcq' && 'choice' in input.answer ? misconceptionOf(question, input.answer.choice) : grade.errorType === 'misconception' ? grade.feedback : null;
+      applyOutcome(attemptId, item, { correct: false, errorType: grade.errorType ?? undefined, misconception }, now);
+    }
     return { attemptId, ...grade, needsRating: grade.correct, reveal: reveal(question) };
+  }
+
+  /** 联结练习：认可时在认知地图上加一条带原话的联结；不认可时不入图，对方知识点立即到期复习 */
+  async function submitConnection(item: ItemRow, input: { sessionId: string; answer: Answer; durationMs?: number }, now: Date) {
+    if (!('text' in input.answer)) throw new LearningError('联结练习需要提交文字作答', 400);
+    const content = item.content as ConnectionContent;
+    const points = loadPoints(db);
+    const point = points.find((p) => p.id === item.knowledgePointId);
+    const verdict = await gradeConnection(
+      model,
+      { topicTitle: point?.topicTitle ?? '', title: point?.title ?? '', summary: point?.summary ?? '', partner: content.partner.title },
+      content.prompt,
+      input.answer.text,
+    );
+    const attemptId = randomUUID();
+    db.transaction((tx) => {
+      tx.insert(attempts)
+        .values({
+          id: attemptId,
+          itemId: item.id,
+          sessionId: input.sessionId,
+          answer: input.answer,
+          correct: verdict.accepted,
+          feedback: verdict.feedback,
+          applied: true,
+          durationMs: input.durationMs,
+          createdAt: now,
+        })
+        .run();
+      if (verdict.accepted) {
+        tx.insert(connections)
+          .values({
+            id: randomUUID(),
+            fromPointId: item.knowledgePointId,
+            toPointId: content.partner.kind === 'point' ? content.partner.id : null,
+            toExistingId: content.partner.kind === 'existing' ? content.partner.id : null,
+            quote: (input.answer as { text: string }).text,
+            relation: verdict.relation,
+            attemptId,
+            createdAt: now,
+          })
+          .run();
+      }
+    });
+    if (!verdict.accepted && content.partner.kind === 'point') duePartnerNow(content.partner.id, now);
+    return {
+      attemptId,
+      correct: verdict.accepted,
+      errorType: null,
+      feedback: verdict.feedback,
+      needsRating: false,
+      reveal: { relation: verdict.relation },
+    };
   }
 
   /** 答对后的自评 */
@@ -129,128 +276,90 @@ export function createLearning({ db, model, settings }: LearningDeps) {
     return { ok: true };
   }
 
-  /** 结束一节：答对但没自评的按"良好"处理，然后在后台补满候选池。 */
+  /**
+   * 申诉：对判错的作答发起，由 AI 重新判定。
+   * - 答案也成立：还原作答前的记忆状态，改判为答对，等用户补一次自评；
+   * - 题目或参考答案有误：还原作答前的记忆状态，这次作答作废，不计入记忆状态；
+   * - 维持原判：不变。
+   * 只能对这个知识点最近一次计入记忆的作答申诉，否则还原会覆盖之后的进展。
+   */
+  async function appealAttempt(attemptId: string, reason: string, now: Date) {
+    const attempt = db.select().from(attempts).where(eq(attempts.id, attemptId)).get();
+    if (!attempt) throw new LearningError('作答记录不存在', 404);
+    const [item] = getItems(db, [attempt.itemId]);
+    if (!item || item.kind === 'connection') throw new LearningError('联结练习不能申诉', 400);
+    if (attempt.correct) throw new LearningError('只能对判错的作答申诉', 400);
+    if (attempt.appeal) throw new LearningError('这次作答已经申诉过了', 409);
+    if (hasLaterApplied(attempt, item.knowledgePointId)) {
+      throw new LearningError('这个知识点之后又有了新的作答，不能再对这一次申诉', 409);
+    }
+
+    const point = loadPoints(db).find((p) => p.id === item.knowledgePointId);
+    const answer = attempt.answer as Answer;
+    const verdict = await judgeAppeal(model, { topicTitle: point?.topicTitle ?? '', title: point?.title ?? '' }, {
+      question: questionOf(item)!,
+      answer: 'text' in answer ? answer.text : `选择了第 ${answer.choice + 1} 项`,
+      originalFeedback: attempt.feedback ?? '',
+      reason,
+    });
+    const appeal: Appeal = { reason, outcome: verdict.outcome, feedback: verdict.feedback, at: now.toISOString() };
+    const before = stateFromJson(attempt.stateBefore);
+
+    db.transaction((tx) => {
+      if (verdict.outcome !== 'rejected' && before) saveState(tx, item.knowledgePointId, before, now);
+      if (verdict.outcome === 'accepted') {
+        tx.update(attempts).set({ appeal, correct: true, errorType: null, applied: false }).where(eq(attempts.id, attemptId)).run();
+      } else if (verdict.outcome === 'void') {
+        tx.update(attempts).set({ appeal, voided: true }).where(eq(attempts.id, attemptId)).run();
+        tx.update(items).set({ status: 'void' }).where(eq(items.id, item.id)).run();
+      } else {
+        tx.update(attempts).set({ appeal }).where(eq(attempts.id, attemptId)).run();
+      }
+    });
+    if (verdict.outcome !== 'rejected') enqueue(db, 'fill_pool', { now: now.toISOString() }, now, { dedupe: true });
+    return { outcome: verdict.outcome, feedback: verdict.feedback, needsRating: verdict.outcome === 'accepted' };
+  }
+
+  // ---------- 结束一节 ----------
+
+  /** 结束一节：答对但没自评的按"良好"处理，然后在后台补满候选池；到了主题回访的时候带上回访题。 */
   function finishSession(sessionId: string, now: Date) {
     const session = db.select().from(sessions).where(eq(sessions.id, sessionId)).get();
     if (!session) throw new LearningError('这一节不存在', 404);
-    if (session.finishedAt) return { ok: true };
-    const unrated = db
-      .select()
-      .from(attempts)
-      .where(and(eq(attempts.sessionId, sessionId), eq(attempts.applied, false)))
-      .all();
-    for (const attempt of unrated) {
-      const [item] = getItems(db, [attempt.itemId]);
-      applyOutcome(attempt.id, item!, { correct: true, selfRating: 'good' }, now);
+    if (!session.finishedAt) {
+      const unrated = db
+        .select()
+        .from(attempts)
+        .where(and(eq(attempts.sessionId, sessionId), eq(attempts.applied, false)))
+        .all();
+      for (const attempt of unrated) {
+        const [item] = getItems(db, [attempt.itemId]);
+        applyOutcome(attempt.id, item!, { correct: true, selfRating: 'good' }, now);
+      }
+      db.update(sessions).set({ finishedAt: now }).where(eq(sessions.id, sessionId)).run();
+      enqueue(db, 'fill_pool', { now: now.toISOString() }, now, { dedupe: true });
     }
-    db.update(sessions).set({ finishedAt: now }).where(eq(sessions.id, sessionId)).run();
-    enqueue(db, 'fill_pool', { now: now.toISOString() }, now, { dedupe: true });
-    return { ok: true };
+    return { ok: true, revisit: revisitQuestion(now) };
   }
 
-  /**
-   * 认知地图中某个主题的部分：每个知识点的掌握阶段、是否在认知边缘，以及学过的内容和作答记录。
-   * 只给已经作答过的内容：还没学的知识点只显示标题和概要，讲解要在微课堂里配合小题学。
-   */
-  function topicMap(topicId: string) {
-    const topic = getTopic(db, topicId);
-    if (!topic) throw new LearningError('学习主题不存在', 404);
-    const allPoints = loadPoints(db);
-    const states = loadStates(db);
-    const edgeIds = new Set(cognitiveEdge(allPoints, states).map((p) => p.id));
-    const points = allPoints.filter((p) => p.topicId === topicId).sort((a, b) => a.position - b.position);
-
-    const records = loadRecords(eq(knowledgePoints.topicId, topicId));
-
-    return {
-      topic,
-      points: points.map((point) => {
-        const state = states.get(point.id) ?? UNLEARNED;
-        return {
-          id: point.id,
-          title: point.title,
-          summary: point.summary,
-          stage: state.stage,
-          onEdge: edgeIds.has(point.id),
-          nextReviewAt: state.card?.due ?? null,
-          records: records
-            .filter((r) => r.item.knowledgePointId === point.id)
-            .map(toRecord),
-        };
-      }),
-    };
+  /** 主题回访题：问用户暂停的主题里哪些想恢复学习 */
+  function revisitQuestion(now: Date) {
+    const paused = db.select({ id: topics.id, title: topics.title }).from(topics).where(eq(topics.status, 'paused')).all();
+    const last = readState<string>(db, LAST_REVISIT_KEY);
+    const due = revisitDue(last ? new Date(last) : null, now, currentSettings().revisitIntervalDays, paused.length);
+    return due ? { topics: paused } : null;
   }
 
-  /**
-   * 按天回看：有学习记录的日子（按用户所在时区划分），最近的在前。
-   * 指定主题时只算这个主题的知识点。
-   */
-  function reviewDays(input: { timeZone: string; topicId?: string }) {
-    if (input.topicId && !getTopic(db, input.topicId)) throw new LearningError('学习主题不存在', 404);
-    const dayOf = dayFormatter(input.timeZone);
-    const rows = db
-      .select({ at: attempts.createdAt, knowledgePointId: items.knowledgePointId })
-      .from(attempts)
-      .innerJoin(items, eq(attempts.itemId, items.id))
-      .innerJoin(knowledgePoints, eq(items.knowledgePointId, knowledgePoints.id))
-      .where(input.topicId ? eq(knowledgePoints.topicId, input.topicId) : undefined)
-      .all();
-    const pointsByDay = new Map<string, Set<string>>();
-    for (const row of rows) {
-      const day = dayOf(row.at);
-      pointsByDay.set(day, (pointsByDay.get(day) ?? new Set()).add(row.knowledgePointId));
-    }
-    return [...pointsByDay]
-      .map(([day, pointIds]) => ({ day, pointCount: pointIds.size }))
-      .sort((a, b) => b.day.localeCompare(a.day));
-  }
-
-  /** 按天回看：那一天的全部作答留档（讲解、题目、回答、批改），按当时的先后顺序 */
-  function dayReview(input: { day: string; timeZone: string; topicId?: string }) {
-    const topic = input.topicId ? getTopic(db, input.topicId) : null;
-    if (input.topicId && !topic) throw new LearningError('学习主题不存在', 404);
-    const dayOf = dayFormatter(input.timeZone);
-    // 先按 UTC 前后各放宽 14 小时（覆盖所有时区）粗筛，再按用户时区精确判断是不是这一天
-    const dayStart = Date.parse(`${input.day}T00:00:00Z`);
-    const range = and(
-      gte(attempts.createdAt, new Date(dayStart - 14 * HOUR_MS)),
-      lt(attempts.createdAt, new Date(dayStart + 38 * HOUR_MS)),
-    );
-    const rows = loadRecords(input.topicId ? and(range, eq(knowledgePoints.topicId, input.topicId)) : range).filter(
-      (row) => dayOf(row.attempt.createdAt) === input.day,
-    );
-    const states = loadStates(db);
-    return {
-      day: input.day,
-      topic: topic ?? null,
-      entries: rows.map((row) => ({
-        topicTitle: row.topicTitle,
-        point: { id: row.point.id, title: row.point.title, stage: (states.get(row.point.id) ?? UNLEARNED).stage },
-        record: toRecord(row),
-      })),
-    };
-  }
-
-  /**
-   * 重新学习一批知识点：已学过的退回理解阶段，由下一节微课堂换一种讲法重讲。
-   * 还没学会的（未学、理解阶段）本来就会被讲解，跳过。
-   * 知识点还在未完成的一节里等作答或自评时拒绝，避免那一项作答后无法按原阶段更新。
-   */
-  function relearnPoints(knowledgePointIds: string[], now: Date) {
-    const states = loadStates(db);
-    const missing = knowledgePointIds.filter((id) => !states.has(id));
-    if (missing.length > 0) throw new LearningError('知识点不存在', 404);
-    const targets = knowledgePointIds.filter((id) => hasLearned(states.get(id)!.stage));
-
-    const busy = pendingInOpenSession(targets);
-    if (busy.length > 0) throw new LearningError('有知识点还在未完成的一节微课堂里，先完成那一节再重新学习', 409);
-
+  /** 回答主题回访：选中的主题恢复新学；"暂时都不"时传空数组。不计入记忆评分。 */
+  function answerRevisit(resumeTopicIds: string[], now: Date) {
     db.transaction((tx) => {
-      for (const id of targets) saveState(tx, id, relearn(states.get(id)!), now);
+      if (resumeTopicIds.length > 0) {
+        tx.update(topics).set({ status: 'active' }).where(and(inArray(topics.id, resumeTopicIds), eq(topics.status, 'paused'))).run();
+      }
+      writeState(tx, LAST_REVISIT_KEY, now.toISOString(), now);
     });
-    // 理解阶段需要一项新的讲解，后台补进候选池
-    if (targets.length > 0) enqueue(db, 'fill_pool', { now: now.toISOString() }, now, { dedupe: true });
-    return { relearned: targets };
+    if (resumeTopicIds.length > 0) enqueue(db, 'fill_pool', { now: now.toISOString() }, now, { dedupe: true });
+    return { ok: true };
   }
 
   // ---------- 内部 ----------
@@ -259,13 +368,94 @@ export function createLearning({ db, model, settings }: LearningDeps) {
     return db.select().from(sessions).where(isNull(sessions.finishedAt)).orderBy(asc(sessions.startedAt)).get();
   }
 
+  /** 今天（用户时区）已经完成了几节 */
+  function finishedToday(now: Date, timeZone = SERVER_TIME_ZONE): number {
+    const dayOf = dayFormatter(timeZone);
+    const today = dayOf(now);
+    return db
+      .select({ finishedAt: sessions.finishedAt })
+      .from(sessions)
+      .where(isNotNull(sessions.finishedAt))
+      .all()
+      .filter((s) => dayOf(s.finishedAt!) === today).length;
+  }
+
+  /** 这一节的新知识点来自哪个主题：在候选池里备有新学内容的主题之间，按优先级轮换 */
+  function chooseTopicForNew(points: PointInfo[], states: Map<string, MemoryState>, pool: PoolItem[], mobile: boolean): string | null {
+    const ready = new Set(
+      pool.filter((i) => i.kind === 'lesson' && (!mobile || isMobileForm(i.questionForm))).map((i) => i.knowledgePointId),
+    );
+    const topicIds = new Set(cognitiveEdge(points, states).filter((p) => ready.has(p.id)).map((p) => p.topicId!));
+    if (topicIds.size === 0) return null;
+    const served = db.select({ newTopicId: sessions.newTopicId }).from(sessions).where(isNotNull(sessions.newTopicId)).all();
+    const rows = db.select().from(topics).where(inArray(topics.id, [...topicIds])).all();
+    return chooseNewTopic(
+      rows.map((t) => ({
+        topicId: t.id,
+        priority: t.priority,
+        servedSessions: served.filter((s) => s.newTopicId === t.id).length,
+        createdAt: t.createdAt.getTime(),
+      })),
+    );
+  }
+
+  /** 时长校准系数：按最近的作答用时 */
+  function currentTimeFactor(): number {
+    const samples = db
+      .select({ estSeconds: items.estSeconds, durationMs: attempts.durationMs })
+      .from(attempts)
+      .innerJoin(items, eq(attempts.itemId, items.id))
+      .where(and(isNotNull(attempts.durationMs), ne(items.kind, 'connection')))
+      .orderBy(desc(attempts.createdAt))
+      .limit(20)
+      .all()
+      .reverse();
+    return timeFactor(samples.map((s) => ({ estSeconds: s.estSeconds, durationMs: s.durationMs! })));
+  }
+
+  /** 每个新知识点之后插入一道联结练习：与已学会的前置、易混知识点，或用户的已有知识建立联系 */
+  function withConnections(
+    entries: { itemId: string; purpose: ItemPurpose }[],
+    picked: PoolItem[],
+    byId: Map<string, PointInfo>,
+    states: Map<string, MemoryState>,
+    now: Date,
+  ) {
+    const known = loadExistingKnowledge(db);
+    const result: { itemId: string; purpose: ItemPurpose }[] = [];
+    entries.forEach((entry, i) => {
+      result.push(entry);
+      if (entry.purpose !== 'new') return;
+      const point = byId.get(picked[i]!.knowledgePointId);
+      if (!point) return;
+      const partner = choosePartner(point, byId, states, known);
+      if (!partner) return;
+      const content: ConnectionContent = { prompt: connectionPrompt(point.title, partner), partner };
+      const itemId = insertItem(
+        db,
+        { knowledgePointId: point.id, kind: 'connection', form: 'connection', questionForm: 'connection', estSeconds: CONNECTION_SECONDS, content, status: 'used' },
+        now,
+      );
+      result.push({ itemId, purpose: 'connection' });
+    });
+    return result;
+  }
+
   /** 按补充说明重新生成挑好的内容：成功的存入并替换原内容，失败的沿用原内容 */
   async function regenerate(picked: PoolItem[], guidance: string, now: Date) {
     const points = loadPoints(db);
+    const states = loadStates(db);
+    const known = loadExistingKnowledge(db).map((k) => k.text);
     const byId = new Map(points.map((p) => [p.id, p]));
     const results = await settleWithLimit(
-      picked.map((item) => () => generateItem(model, contextOf(byId.get(item.knowledgePointId)!, byId, guidance), needOf(item))),
-      settings.generationConcurrency,
+      picked.map((item) => () =>
+        generateItem(
+          model,
+          contextOf(byId.get(item.knowledgePointId)!, byId, { guidance, state: states.get(item.knowledgePointId), existingKnowledge: known }),
+          needOf(item),
+        ),
+      ),
+      currentSettings().generationConcurrency,
     );
     const replaced = picked.map((item, i): PoolItem => {
       const result = results[i]!;
@@ -282,58 +472,62 @@ export function createLearning({ db, model, settings }: LearningDeps) {
     return { items: replaced, applied: results.filter((r) => r.status === 'fulfilled').length };
   }
 
-  /** 作答留档连同所属的内容、知识点和主题，按作答时间排序 */
-  function loadRecords(filter: SQL | undefined) {
-    return db
-      .select({ attempt: attempts, item: items, point: knowledgePoints, topicTitle: topics.title })
-      .from(attempts)
-      .innerJoin(items, eq(attempts.itemId, items.id))
-      .innerJoin(knowledgePoints, eq(items.knowledgePointId, knowledgePoints.id))
-      .innerJoin(topics, eq(knowledgePoints.topicId, topics.id))
-      .where(filter)
-      .orderBy(asc(attempts.createdAt))
-      .all();
-  }
-
-  /** 在未结束的一节里、还没按作答更新记忆状态的知识点 */
-  function pendingInOpenSession(knowledgePointIds: string[]): string[] {
-    if (knowledgePointIds.length === 0) return [];
-    const rows = db
-      .select({ knowledgePointId: items.knowledgePointId, applied: attempts.applied })
-      .from(sessionItems)
-      .innerJoin(sessions, eq(sessionItems.sessionId, sessions.id))
-      .innerJoin(items, eq(sessionItems.itemId, items.id))
-      .leftJoin(attempts, and(eq(attempts.sessionId, sessionItems.sessionId), eq(attempts.itemId, sessionItems.itemId)))
-      .where(and(isNull(sessions.finishedAt), inArray(items.knowledgePointId, knowledgePointIds)))
-      .all();
-    return rows.filter((r) => !r.applied).map((r) => r.knowledgePointId);
-  }
-
+  /**
+   * 按作答结果更新记忆状态，并记下更新前的状态（申诉改判时还原）。
+   * 讲解类内容对已学过的知识点是对比讲解，按复习结果更新。
+   * 理解或回忆阶段连续答错达到阈值时，后台拆解出更基础的前置知识点。
+   */
   function applyOutcome(attemptId: string, item: ItemRow, outcome: Outcome, now: Date) {
-    const states = loadStates(db);
-    const state = states.get(item.knowledgePointId) ?? UNLEARNED;
-    const question = questionOf(item);
-    const next =
-      item.kind === 'lesson'
-        ? applyLessonOutcome(state, { explainForm: item.form, questionForm: question.type }, outcome, now)
-        : applyReviewOutcome(state, item.form, outcome, now);
+    const state = loadStates(db).get(item.knowledgePointId) ?? UNLEARNED;
+    const question = questionOf(item)!;
+    let next: MemoryState;
+    if (item.kind === 'lesson' && !hasSchedule(state.stage) && state.stage !== 'inferred') {
+      next = applyLessonOutcome(state, { explainForm: item.form, questionForm: question.type }, outcome, now);
+    } else if (hasSchedule(state.stage) || state.stage === 'inferred') {
+      next = { ...applyReviewOutcome(state, question.type, outcome, now), lastExplainForm: item.kind === 'lesson' ? item.form : state.lastExplainForm };
+    } else {
+      // 知识点已被重新学习等操作改变了阶段，这次作答不再计入
+      next = state;
+    }
     db.transaction((tx) => {
       saveState(tx, item.knowledgePointId, next, now);
       tx.update(attempts)
-        .set({ applied: true, selfRating: outcome.correct ? outcome.selfRating : null })
+        .set({ applied: true, selfRating: outcome.correct ? outcome.selfRating : null, stateBefore: state })
         .where(eq(attempts.id, attemptId))
         .run();
     });
+    if (needsDecomposition(next) && next.failStreak === DECOMPOSE_FAIL_STREAK && !wasDecomposed(db, item.knowledgePointId)) {
+      enqueue(db, 'decompose', { knowledgePointId: item.knowledgePointId }, now);
+    }
   }
 
   async function gradeAnswer(item: ItemRow, question: Question, answer: Answer): Promise<Grade> {
-    if (question.type === 'mcq') {
-      if (!('choice' in answer)) throw new LearningError('选择题需要提交选项序号', 400);
-      return gradeMcq(question, answer.choice);
+    if (question.type === 'mcq' || question.type === 'pick_line') {
+      if (!('choice' in answer)) throw new LearningError('这道题需要提交选项序号', 400);
+      return question.type === 'mcq' ? gradeMcq(question, answer.choice) : gradePickLine(question, answer.choice);
     }
-    if (!('text' in answer)) throw new LearningError('简答题需要提交文字作答', 400);
+    if (!('text' in answer)) throw new LearningError('这道题需要提交文字作答', 400);
+    if (!isOpenQuestion(question)) throw new LearningError('不支持的题目形式', 400);
     const point = loadPoints(db).find((p) => p.id === item.knowledgePointId);
-    return gradeShortAnswer(model, { topicTitle: point?.topicTitle ?? '', title: point?.title ?? '' }, question, answer.text);
+    return gradeOpenAnswer(model, { topicTitle: point?.topicTitle ?? '', title: point?.title ?? '' }, question, answer.text);
+  }
+
+  /** 联结不成立：对方知识点立即到期，下一节复习它 */
+  function duePartnerNow(pointId: string, now: Date) {
+    const state = loadStates(db).get(pointId);
+    if (!state?.card || !hasSchedule(state.stage)) return;
+    saveState(db, pointId, { ...state, card: { ...state.card, due: now } }, now);
+  }
+
+  /** 这次作答之后（含同一时刻），同一知识点是否又有计入记忆的作答 */
+  function hasLaterApplied(attempt: typeof attempts.$inferSelect, knowledgePointId: string): boolean {
+    return db
+      .select({ id: attempts.id, createdAt: attempts.createdAt })
+      .from(attempts)
+      .innerJoin(items, eq(attempts.itemId, items.id))
+      .where(and(eq(items.knowledgePointId, knowledgePointId), eq(attempts.applied, true), ne(attempts.id, attempt.id), ne(items.kind, 'connection')))
+      .all()
+      .some((a) => a.createdAt.getTime() >= attempt.createdAt.getTime());
   }
 
   function requireSessionItem(sessionId: string, itemId: string): ItemRow {
@@ -355,36 +549,32 @@ export function createLearning({ db, model, settings }: LearningDeps) {
 
   /** 给前端看的一节内容：作答前不包含答案。 */
   function viewSession(sessionId: string) {
+    const session = db.select().from(sessions).where(eq(sessions.id, sessionId)).get()!;
     const links = db.select().from(sessionItems).where(eq(sessionItems.sessionId, sessionId)).orderBy(asc(sessionItems.position)).all();
     const rows = new Map(getItems(db, links.map((l) => l.itemId)).map((r) => [r.id, r]));
     const done = db.select().from(attempts).where(eq(attempts.sessionId, sessionId)).all();
-    const titles = new Map(loadPoints(db).map((p) => [p.id, p.title]));
-    // 之前的节里讲过的知识点，这次的讲解就是重讲
-    const taughtBefore = new Set(
-      db
-        .select({ knowledgePointId: items.knowledgePointId, sessionId: attempts.sessionId })
-        .from(attempts)
-        .innerJoin(items, eq(attempts.itemId, items.id))
-        .all()
-        .filter((r) => r.sessionId !== sessionId)
-        .map((r) => r.knowledgePointId),
-    );
+    const points = new Map(loadPoints(db).map((p) => [p.id, p]));
     return {
       id: sessionId,
+      startedAt: session.startedAt,
+      budgetSeconds: session.budgetSeconds,
+      guidance: session.guidance,
       items: links.map((link) => {
         const row = rows.get(link.itemId)!;
         const attempt = done.find((a) => a.itemId === row.id);
         const question = questionOf(row);
+        const point = points.get(row.knowledgePointId);
         return {
           id: row.id,
           kind: row.kind,
-          purpose: purposeOf(row, taughtBefore),
+          purpose: link.purpose,
           form: row.form,
+          formLabel: formLabel(row.form),
           knowledgePointId: row.knowledgePointId,
-          title: titles.get(row.knowledgePointId) ?? '',
+          title: point?.title ?? '',
+          topicTitle: point?.topicTitle ?? '',
           estSeconds: row.estSeconds,
-          explanation: row.kind === 'lesson' ? (row.content as LessonContent).explanation : null,
-          question: hideAnswer(question),
+          ...itemBody(row),
           attempt: attempt
             ? {
                 attemptId: attempt.id,
@@ -392,7 +582,9 @@ export function createLearning({ db, model, settings }: LearningDeps) {
                 errorType: attempt.errorType,
                 feedback: attempt.feedback,
                 needsRating: attempt.correct && !attempt.applied,
-                reveal: reveal(question),
+                reveal: question ? reveal(question) : null,
+                appeal: (attempt.appeal as Appeal | null) ?? null,
+                voided: attempt.voided,
               }
             : null,
         };
@@ -400,46 +592,50 @@ export function createLearning({ db, model, settings }: LearningDeps) {
     };
   }
 
-  return { startTopic, listTopics, topicMap, reviewDays, dayReview, relearnPoints, nextSession, submitAttempt, rateAttempt, finishSession };
+  return {
+    startTopic,
+    listTopics,
+    updateTopic,
+    nextSession,
+    submitAttempt,
+    rateAttempt,
+    appealAttempt,
+    finishSession,
+    answerRevisit,
+  };
 }
 
 export type Learning = ReturnType<typeof createLearning>;
 
-/** 这一项在本节中的用途：新学、重讲（之前讲过但没学会）或复习 */
-export type ItemPurpose = 'new' | 'advance' | 'review';
-
-function purposeOf(item: ItemRow, taughtBefore: Set<string>): ItemPurpose {
-  if (item.kind === 'review') return 'review';
-  return taughtBefore.has(item.knowledgePointId) ? 'advance' : 'new';
+/** 组装时确定这一项的用途 */
+function purposeOf(item: PoolItem, state: MemoryState): ItemPurpose {
+  if (item.form === CONTRAST_FORM) return 'contrast';
+  if (item.kind === 'review') return state.stage === 'inferred' ? 'spot_check' : 'review';
+  return state.stage === 'unlearned' ? 'new' : 'advance';
 }
 
-const HOUR_MS = 3600 * 1000;
-
-/** 把时间换算成用户所在时区的日期（YYYY-MM-DD）；时区名不合法时报 400 */
-function dayFormatter(timeZone: string): (date: Date) => string {
-  let format: Intl.DateTimeFormat;
-  try {
-    format = new Intl.DateTimeFormat('sv-SE', { timeZone, year: 'numeric', month: '2-digit', day: '2-digit' });
-  } catch {
-    throw new LearningError(`不认识的时区：${timeZone}`, 400);
-  }
-  return (date) => format.format(date);
+/**
+ * 联结练习的对象：已学会的前置知识点优先，其次已学会的易混知识点，再次用户的已有知识（同主题的优先）。
+ * 都没有时不出联结练习。
+ */
+function choosePartner(
+  point: PointInfo,
+  byId: Map<string, PointInfo>,
+  states: Map<string, MemoryState>,
+  known: { id: string; text: string; topicId: string | null }[],
+): ConnectionContent['partner'] | null {
+  const learned = (id: string) => hasLearned((states.get(id) ?? UNLEARNED).stage);
+  const byPosition = (ids: string[]) => ids.filter(learned).sort((a, b) => (byId.get(a)?.position ?? 0) - (byId.get(b)?.position ?? 0));
+  const pointId = byPosition(point.prerequisiteIds).at(-1) ?? byPosition(point.confusableIds)[0];
+  if (pointId) return { kind: 'point', id: pointId, title: byId.get(pointId)!.title };
+  const existing = known.find((k) => k.topicId === point.topicId) ?? known[0];
+  return existing ? { kind: 'existing', id: existing.id, title: existing.text } : null;
 }
 
-/** 一次作答的留档：作答过的题目连同答案一起给出 */
-function toRecord({ attempt, item }: { attempt: typeof attempts.$inferSelect; item: ItemRow }) {
-  return {
-    attemptId: attempt.id,
-    at: attempt.createdAt,
-    kind: item.kind,
-    explanation: item.kind === 'lesson' ? (item.content as LessonContent).explanation : null,
-    question: questionOf(item),
-    answer: attempt.answer as Answer,
-    correct: attempt.correct,
-    errorType: attempt.errorType,
-    feedback: attempt.feedback,
-    selfRating: attempt.selfRating,
-  };
+function connectionPrompt(title: string, partner: ConnectionContent['partner']): string {
+  return partner.kind === 'point'
+    ? `用你自己的话说说「${title}」和「${partner.title}」是什么关系：比如谁是谁的前提、有什么相同和不同、什么时候用哪个。一两句话就够。`
+    : `用你自己的话说说「${title}」和你已经会的「${partner.title}」有什么联系：它们哪里相像、哪里不同，或者已经会的怎样帮你理解新的。一两句话就够。`;
 }
 
 /** 候选池中一项内容的形式，换算成重新生成时需要的形式 */
@@ -448,21 +644,4 @@ function needOf(item: PoolItem): PoolNeed {
   return item.kind === 'lesson'
     ? { kind: 'lesson', knowledgePointId: item.knowledgePointId, explainForm: item.form as ExplainForm, questionForm: item.questionForm as QuestionForm }
     : { kind: 'review', knowledgePointId: item.knowledgePointId, questionForm: item.form as QuestionForm };
-}
-
-function questionOf(item: ItemRow): Question {
-  return item.kind === 'lesson' ? (item.content as LessonContent).check : (item.content as ReviewContent).question;
-}
-
-function hideAnswer(question: Question) {
-  return question.type === 'mcq'
-    ? { type: question.type, stem: question.stem, options: question.options.map((o) => o.text) }
-    : { type: question.type, prompt: question.prompt };
-}
-
-/** 作答后展示的参考答案 */
-function reveal(question: Question) {
-  return question.type === 'mcq'
-    ? { answerIndex: question.answerIndex, explanation: question.explanation }
-    : { referenceAnswer: question.referenceAnswer, keyPoints: question.keyPoints };
 }

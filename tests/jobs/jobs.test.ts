@@ -4,17 +4,20 @@ import { claimNext, enqueue } from '../../src/jobs/queue';
 import { createWorker } from '../../src/jobs/worker';
 import { openDb } from '../../src/store/db';
 import { createTopic, getTopic, loadPoints, loadPool, loadStates } from '../../src/store/repo';
-import { jobs } from '../../src/store/schema';
+import { DEFAULT_USER_SETTINGS, toSettings } from '../../src/settings';
+import { jobs, topics } from '../../src/store/schema';
 import { type FakeModelOptions, createFakeModel } from '../fixtures/fake-model';
 
 const now = new Date('2026-10-20T12:00:00Z');
-const settings = { budgetSeconds: 600, maxNewPerSession: 2, generationConcurrency: 2 };
+const settings = () => ({ ...toSettings(DEFAULT_USER_SETTINGS, {}), generationConcurrency: 2 });
 
 function setup(options: FakeModelOptions = {}) {
   const db = openDb(':memory:');
   const { model, calls } = createFakeModel(options);
   const worker = createWorker(db, createHandlers({ db, model, clock: () => now, settings }), () => now);
   const topicId = createTopic(db, 'TypeScript 常用技能', now);
+  // 跳过摸底诊断：所有知识点从未学开始，可以新学
+  db.update(topics).set({ placementStatus: 'skipped' }).run();
   enqueue(db, 'generate_graph', { topicId }, now);
   return { db, worker, topicId, calls };
 }
@@ -80,9 +83,10 @@ describe('后台任务：并发生成候选池', () => {
     const { model, concurrency } = createFakeModel({ delayMs: 20 });
     const worker = createWorker(db, createHandlers({ db, model, clock: () => now, settings }), () => now);
     enqueue(db, 'generate_graph', { topicId: createTopic(db, 'TypeScript 常用技能', now) }, now);
+    db.update(topics).set({ placementStatus: 'skipped' }).run();
     await worker.runUntilIdle();
     expect(loadPool(db)).toHaveLength(4);
-    expect(concurrency.peak).toBe(settings.generationConcurrency);
+    expect(concurrency.peak).toBe(settings().generationConcurrency);
   });
 
   it('其中一项遇到网络错误时，其余照常入池；重试时只补缺少的那一项', async () => {

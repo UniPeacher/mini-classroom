@@ -15,6 +15,13 @@
       "when": 1792474294903,
       "tag": "0001_tense_dakota_north",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1792506515629,
+      "tag": "0002_small_husk",
+      "breakpoints": true
     }
   ]
 }

@@ -4,11 +4,11 @@ import { modelFromEnv } from '../ai/gateway';
 import { createHandlers } from '../jobs/handlers';
 import { enqueue } from '../jobs/queue';
 import { createWorker } from '../jobs/worker';
-import { loadSettings } from '../settings';
+import { settingsSource } from '../settings';
 import { openDb } from '../store/db';
 import { createApp } from './app';
-import { createLearning } from './learning';
 import { listenWithFallback } from './listen';
+import { createServices } from './services';
 
 if (existsSync('.env')) process.loadEnvFile('.env');
 
@@ -20,7 +20,7 @@ const WEB_PORT_FILE = join(RUN_DIR, 'web.port');
 const clock = () => new Date();
 const db = openDb(process.env.DB_PATH ?? 'data/weiketang.sqlite');
 const model = modelFromEnv();
-const settings = loadSettings();
+const settings = settingsSource(db);
 
 const worker = createWorker(db, createHandlers({ db, model, clock, settings }), clock);
 worker.start();
@@ -31,9 +31,8 @@ const refreshPool = () => enqueue(db, 'fill_pool', {}, clock(), { dedupe: true }
 refreshPool();
 const refreshTimer = setInterval(refreshPool, POOL_REFRESH_MS);
 
-const learning = createLearning({ db, model, settings });
 const app = createApp({
-  learning,
+  services: createServices({ db, model, settings }),
   clock,
   devMode: process.env.DEV_MODE === 'true',
   // 前端端口可能已顺延，以前端写下的端口文件为准

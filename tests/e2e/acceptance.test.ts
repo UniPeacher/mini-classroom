@@ -10,11 +10,10 @@ import { DAY, DAY1, createHarness } from '../fixtures/harness';
  */
 describe('验收：从新建主题到第二节微课堂', () => {
   it('完整走通', async () => {
-    const { call, worker, calls, db } = createHarness();
+    const { call, worker, calls, db, startTopic } = createHarness();
 
-    // 新建主题，后台生成图谱并补满候选池
-    expect((await call('POST', '/api/topics', { title: 'TypeScript 常用技能' })).status).toBe(201);
-    await worker.runUntilIdle();
+    // 新建主题，后台生成图谱；跳过摸底诊断后补满候选池
+    await startTopic();
 
     // ---- 第 1 节 ----
     const first = (await call('POST', '/api/sessions/next')).body.session;
@@ -58,7 +57,9 @@ describe('验收：从新建主题到第二节微课堂', () => {
 
     const unknownAgain = second.items.find((i: any) => i.knowledgePointId === unknown.knowledgePointId);
     expect(unknownAgain).toBeDefined();
-    expect(unknownAgain.purpose).toBe('advance');
+    // 上次答错属于误解（假模型批改为 misconception），这次改用对比讲解
+    expect(unknownAgain.purpose).toBe('contrast');
+    expect(unknownAgain.form).toBe('explain_contrast');
     expect(unknownAgain.form).not.toBe(unknown.form); // 换一种讲解形式
     expect(unknownAgain.question.type).not.toBe(unknown.question.type); // 小题也换形式
 
@@ -76,8 +77,7 @@ describe('验收：从新建主题到第二节微课堂', () => {
 describe('学习流程的边界情况', () => {
   async function started() {
     const harness = createHarness();
-    await harness.call('POST', '/api/topics', { title: 'TypeScript 常用技能' });
-    await harness.worker.runUntilIdle();
+    await harness.startTopic();
     const session = (await harness.call('POST', '/api/sessions/next')).body.session;
     return { ...harness, session };
   }
@@ -85,7 +85,7 @@ describe('学习流程的边界情况', () => {
   it('图谱还没生成好时，提示"准备中"而不是报错', async () => {
     const { call } = createHarness();
     await call('POST', '/api/topics', { title: 'TypeScript 常用技能' });
-    expect((await call('POST', '/api/sessions/next')).body).toEqual({ session: null, preparing: true, resumed: false, guided: null });
+    expect((await call('POST', '/api/sessions/next')).body).toEqual({ session: null, preparing: true, resumed: false, guided: null, capped: false });
   });
 
   it('有未结束的一节时，继续这一节，并带上已作答的结果', async () => {

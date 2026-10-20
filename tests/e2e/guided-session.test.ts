@@ -11,8 +11,7 @@ const GUIDANCE = '多结合后端开发的真实例子';
  */
 async function ready(options: Parameters<typeof createHarness>[0] = {}) {
   const harness = createHarness(options);
-  await harness.call('POST', '/api/topics', { title: 'TypeScript 常用技能' });
-  await harness.worker.runUntilIdle();
+  await harness.startTopic();
   return { ...harness, poolBefore: loadPool(harness.db) };
 }
 
