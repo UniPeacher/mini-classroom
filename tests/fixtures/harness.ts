@@ -11,7 +11,7 @@ export const DAY = 24 * 3600 * 1000;
 /** 用内存数据库 + 假模型组装出完整应用，时间由每个请求的 X-Dev-Now 决定。 */
 export function createHarness(options: FakeModelOptions = {}) {
   const db = openDb(':memory:');
-  const { model, calls } = createFakeModel(options);
+  const { model, calls, prompts } = createFakeModel(options);
   const settings = { budgetSeconds: 600, maxNewPerSession: 2, generationConcurrency: 3 };
   const clock = () => DAY1;
   const worker = createWorker(db, createHandlers({ db, model, clock, settings }), clock);
@@ -26,5 +26,5 @@ export function createHarness(options: FakeModelOptions = {}) {
     return { status: res.status, body: (await res.json()) as T };
   }
 
-  return { db, app, worker, calls, call };
+  return { db, app, worker, calls, prompts, call };
 }

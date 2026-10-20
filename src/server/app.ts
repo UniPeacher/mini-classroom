@@ -21,6 +21,10 @@ const AttemptBody = z.object({
 const RelearnBody = z.object({ knowledgePointIds: z.array(z.string()).min(1, '请选择要重新学习的知识点') });
 const ReviewQuery = z.object({ timeZone: z.string().min(1), topicId: z.string().optional() });
 const DayParam = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, '日期格式应为 YYYY-MM-DD');
+const NextSessionBody = z.object({
+  // 可选的补充说明；全是空白时当作没写
+  guidance: z.string().trim().max(500, '补充说明不超过 500 字').optional(),
+});
 const RatingBody = z.object({ selfRating: z.enum(['hard', 'good', 'easy']) });
 
 /** 组装 HTTP 应用；依赖由调用方注入，便于测试。 */
@@ -69,7 +73,10 @@ export function createApp({ learning, clock, devMode, frontendUrl }: AppDeps) {
     return c.json(learning.relearnPoints(knowledgePointIds, nowOf(c.req.header('X-Dev-Now'))));
   });
 
-  app.post('/api/sessions/next', (c) => c.json(learning.nextSession(nowOf(c.req.header('X-Dev-Now')))));
+  app.post('/api/sessions/next', async (c) => {
+    const { guidance } = NextSessionBody.parse(await c.req.json().catch(() => ({})));
+    return c.json(await learning.nextSession(nowOf(c.req.header('X-Dev-Now')), guidance || undefined));
+  });
 
   app.post('/api/attempts', async (c) => {
     const body = AttemptBody.parse(await c.req.json());

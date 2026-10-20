@@ -1,10 +1,9 @@
 import { AiOutputError, type StructuredModel } from '../ai/gateway';
-import { type PointContext, generateGraph, generateLesson, generateReview } from '../ai/generators';
+import { type PointContext, generateGraph } from '../ai/generators';
 import { type PoolNeed, planPool } from '../domain/plan-pool';
 import type { Settings } from '../settings';
 import type { Db } from '../store/db';
 import {
-  type PointInfo,
   getTopic,
   insertItem,
   loadPoints,
@@ -14,6 +13,7 @@ import {
   saveGraph,
 } from '../store/repo';
 import { settleWithLimit } from './concurrency';
+import { contextOf, generateItem } from './generate-item';
 import { enqueue } from './queue';
 import type { JobHandlers } from './worker';
 
@@ -100,31 +100,6 @@ export function createHandlers(deps: HandlerDeps): JobHandlers {
   };
 
   async function fulfill(need: PoolNeed, ctx: PointContext): Promise<void> {
-    if (need.kind === 'lesson') {
-      const { estSeconds, ...content } = await generateLesson(model, ctx, need);
-      insertItem(
-        db,
-        { knowledgePointId: need.knowledgePointId, kind: 'lesson', form: need.explainForm, questionForm: need.questionForm, estSeconds, content },
-        clock(),
-      );
-    } else {
-      const { estSeconds, ...content } = await generateReview(model, ctx, need.questionForm);
-      insertItem(
-        db,
-        { knowledgePointId: need.knowledgePointId, kind: 'review', form: need.questionForm, questionForm: need.questionForm, estSeconds, content },
-        clock(),
-      );
-    }
+    insertItem(db, await generateItem(model, ctx, need), clock());
   }
-}
-
-function contextOf(point: PointInfo, byId: Map<string, PointInfo>): PointContext {
-  const titles = (ids: string[]) => ids.map((id) => byId.get(id)?.title).filter((t): t is string => t !== undefined);
-  return {
-    topicTitle: point.topicTitle,
-    title: point.title,
-    summary: point.summary,
-    prerequisites: titles(point.prerequisiteIds),
-    confusables: titles(point.confusableIds),
-  };
 }

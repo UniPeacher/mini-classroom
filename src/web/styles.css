@@ -427,3 +427,18 @@ select {
   background: var(--bg);
   color: var(--text);
 }
+
+/* 开始一节前的补充说明 */
+.guidance {
+  max-width: 480px;
+  margin: 12px auto 0;
+}
+
+.guidance textarea {
+  margin-top: 8px;
+}
+
+.guidance p {
+  margin: 4px 0 0;
+  font-size: 14px;
+}

@@ -53,6 +53,8 @@ export interface FakeModelOptions {
  */
 export function createFakeModel(options: FakeModelOptions = {}) {
   const calls: string[] = [];
+  // 每次请求的提示词，与 calls 一一对应
+  const prompts: string[] = [];
   const networkFailures = { ...options.networkFailures };
   const concurrency = { current: 0, peak: 0 };
   const candidates = (name: string, prompt: string): unknown[] => {
@@ -85,6 +87,7 @@ export function createFakeModel(options: FakeModelOptions = {}) {
 
   function respond<T>({ name, schema, prompt }: StructuredRequest<T>): T {
     calls.push(name);
+    prompts.push(prompt);
     if ((networkFailures[name] ?? 0) > 0) {
       networkFailures[name]! -= 1;
       throw new Error('fetch failed');
@@ -97,7 +100,7 @@ export function createFakeModel(options: FakeModelOptions = {}) {
     throw new Error(`假模型没有与 ${name} 结构匹配的内容`);
   }
 
-  return { model, calls, concurrency };
+  return { model, calls, prompts, concurrency };
 }
 
 const correct = (): Grade => ({ correct: true, errorType: null, feedback: '答得好' });

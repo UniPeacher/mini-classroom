@@ -33,6 +33,8 @@ export interface PointContext {
   prerequisites: string[];
   /** 易混知识点，用于选择题干扰项和误解标注 */
   confusables: string[];
+  /** 学习者开始这一节时写的补充说明，用于调整讲解和出题 */
+  guidance?: string;
 }
 
 /** 生成骨架知识图谱 */
@@ -79,6 +81,11 @@ function describePoint(ctx: PointContext): string {
   const lines = [`学习主题：${ctx.topicTitle}`, `知识点：${ctx.title}`, `要掌握的内容：${ctx.summary}`];
   if (ctx.prerequisites.length) lines.push(`学习者已学过的前置知识点：${ctx.prerequisites.join('、')}`);
   if (ctx.confusables.length) lines.push(`易混知识点：${ctx.confusables.join('、')}`);
+  if (ctx.guidance) {
+    lines.push(
+      `\n学习者对这一节的补充说明（在内容准确、符合下面各项要求和输出格式的前提下，据此调整讲解和出题的角度、深度、例子与图解）：\n<guidance>\n${ctx.guidance}\n</guidance>`,
+    );
+  }
   return lines.join('\n');
 }
 

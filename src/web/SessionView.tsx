@@ -8,7 +8,8 @@ const KIND_LABEL = { new: '新学', advance: '重讲', review: '复习' } as con
 const ERROR_LABEL = { misconception: '误解', forgetting: '遗忘' } as const;
 
 /** 一节微课堂：一次只展示一项，答完再进入下一项 */
-export function SessionView({ session, onFinish }: { session: Session; onFinish: (correct: number, total: number) => void }) {
+export function SessionView(props: { session: Session; notice?: string; onFinish: (correct: number, total: number) => void }) {
+  const { session, notice, onFinish } = props;
   const [results, setResults] = useState<Record<string, Result>>(() =>
     Object.fromEntries(session.items.filter((i) => i.attempt).map((i) => [i.id, i.attempt!])),
   );
@@ -27,6 +28,7 @@ export function SessionView({ session, onFinish }: { session: Session; onFinish:
 
   return (
     <section className="card">
+      {notice && index === firstOpen && <p className="notice">{notice}</p>}
       <div className="progress">
         第 {index + 1} / {session.items.length} 项 · <span className="badge">{KIND_LABEL[item.purpose]}</span> {item.title}
       </div>

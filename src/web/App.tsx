@@ -8,7 +8,7 @@ import './styles.css';
 type View =
   | { name: 'home' }
   | { name: 'topic'; topicId: string }
-  | { name: 'session'; session: Session }
+  | { name: 'session'; session: Session; notice?: string }
   | { name: 'done'; correct: number; total: number };
 
 export function App() {
@@ -42,13 +42,13 @@ export function App() {
       {review && <DayReviewPage route={review} />}
       {!review && view.name === 'home' && (
         <Home
-          onStart={(session) => setView({ name: 'session', session })}
+          onStart={(session, notice) => setView({ name: 'session', session, notice })}
           onOpenTopic={(topicId) => setView({ name: 'topic', topicId })}
         />
       )}
       {!review && view.name === 'topic' && <TopicMapView topicId={view.topicId} onBack={() => setView({ name: 'home' })} />}
       {!review && view.name === 'session' && (
-        <SessionView session={view.session} onFinish={(correct, total) => setView({ name: 'done', correct, total })} />
+        <SessionView session={view.session} notice={view.notice} onFinish={(correct, total) => setView({ name: 'done', correct, total })} />
       )}
       {!review && view.name === 'done' && (
         <section className="card center">
@@ -64,10 +64,13 @@ export function App() {
 }
 
 /** 首页：开始学习是主操作；主题管理放在下方 */
-function Home({ onStart, onOpenTopic }: { onStart: (session: Session) => void; onOpenTopic: (topicId: string) => void }) {
+function Home(props: { onStart: (session: Session, notice?: string) => void; onOpenTopic: (topicId: string) => void }) {
+  const { onStart, onOpenTopic } = props;
   const [topics, setTopics] = useState<Topic[]>([]);
   const [preparing, setPreparing] = useState(false);
   const [error, setError] = useState('');
+  const [guidance, setGuidance] = useState('');
+  const [busy, setBusy] = useState(false);
 
   const refresh = useCallback(() => {
     api.listTopics().then((r) => setTopics(r.topics), (e: Error) => setError(e.message));
@@ -84,22 +87,26 @@ function Home({ onStart, onOpenTopic }: { onStart: (session: Session) => void; o
 
   async function start() {
     setError('');
+    setBusy(true);
     try {
-      const { session, preparing } = await api.nextSession();
-      if (session) onStart(session);
+      const { session, preparing, resumed, guided } = await api.nextSession(guidance.trim() || undefined);
+      if (session) onStart(session, guidanceNotice(guidance.trim() !== '', resumed, guided));
       else setPreparing(preparing);
       if (!session && !preparing) setError('暂时没有可学的内容。');
     } catch (e) {
       setError((e as Error).message);
+    } finally {
+      setBusy(false);
     }
   }
 
   return (
     <>
       <section className="card center">
-        <button className="primary" onClick={start} disabled={topics.length === 0}>
-          开始一节微课堂
+        <button className="primary" onClick={start} disabled={topics.length === 0 || busy}>
+          {busy && guidance.trim() ? '正在按补充说明生成本节内容…' : '开始一节微课堂'}
         </button>
+        {topics.length > 0 && <GuidancePicker value={guidance} onChange={setGuidance} disabled={busy} />}
         {preparing && <p className="muted">内容正在后台准备，稍等一会儿再点。</p>}
         {topics.length === 0 && <p className="muted">先在下面输入一个想学的主题。</p>}
         {error && <p className="error">{error}</p>}
@@ -108,6 +115,68 @@ function Home({ onStart, onOpenTopic }: { onStart: (session: Session) => void; o
       <TopicList topics={topics} onCreated={refresh} onOpen={onOpenTopic} />
     </>
   );
+}
+
+/** 常用的补充说明；选中后发给模型的是 text */
+const GUIDANCE_PRESETS = [
+  { label: '讲得更浅显', text: '讲得更浅显：少用术语，多用生活中的类比和例子。' },
+  { label: '多结合实际场景', text: '多结合实际工作中会遇到的真实场景来举例和出题。' },
+  { label: '多用图解释', text: '每段讲解都配图，用图把机制讲清楚。' },
+  { label: '讲得更深入', text: '讲得更深入：多讲背后的原理、边界情况和常见的坑。' },
+];
+const CUSTOM = 'custom';
+
+/** 开始一节前可选的补充说明：下拉选常用说明，或自己写一段 */
+function GuidancePicker({ value, onChange, disabled }: { value: string; onChange: (text: string) => void; disabled: boolean }) {
+  const preset = GUIDANCE_PRESETS.find((p) => p.text === value);
+  const [custom, setCustom] = useState(false);
+  const selected = custom ? CUSTOM : (preset?.text ?? '');
+
+  return (
+    <div className="guidance">
+      <label>
+        补充说明：
+        <select
+          value={selected}
+          disabled={disabled}
+          onChange={(e) => {
+            const isCustom = e.target.value === CUSTOM;
+            setCustom(isCustom);
+            onChange(isCustom ? '' : e.target.value);
+          }}
+        >
+          <option value="">不加（立即开始）</option>
+          {GUIDANCE_PRESETS.map((p) => (
+            <option key={p.label} value={p.text}>
+              {p.label}
+            </option>
+          ))}
+          <option value={CUSTOM}>自己写…</option>
+        </select>
+      </label>
+      {custom && (
+        <textarea
+          value={value}
+          disabled={disabled}
+          maxLength={500}
+          rows={2}
+          onChange={(e) => onChange(e.target.value)}
+          placeholder="例如：我是后端开发，多用 Node.js 的例子"
+        />
+      )}
+      {value.trim() && <p className="muted">会按这段说明重新生成本节内容，大约需要半分钟到一分钟。</p>}
+    </div>
+  );
+}
+
+/** 开始一节后，告诉用户补充说明有没有用上 */
+function guidanceNotice(sent: boolean, resumed: boolean, guided: { applied: number; total: number } | null): string | undefined {
+  if (!sent) return undefined;
+  if (resumed) return '还有一节没完成，先继续那一节；补充说明这次没有用上。';
+  if (!guided) return undefined;
+  if (guided.applied === guided.total) return '本节内容已按补充说明生成。';
+  if (guided.applied === 0) return '按补充说明生成失败，这一节用的是原来准备好的内容。';
+  return `有 ${guided.total - guided.applied} 项按补充说明生成失败，用的是原来准备好的内容。`;
 }
 
 const GRAPH_STATUS: Record<Topic['graphStatus'], string> = {

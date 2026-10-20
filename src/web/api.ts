@@ -11,7 +11,7 @@ export type MapPoint = TopicMap['points'][number];
 export type MapRecord = MapPoint['records'][number];
 export type ReviewDay = Jsonify<ReturnType<Learning['reviewDays']>[number]>;
 export type DayReview = Jsonify<ReturnType<Learning['dayReview']>>;
-export type NextSession = Jsonify<ReturnType<Learning['nextSession']>>;
+export type NextSession = Jsonify<Awaited<ReturnType<Learning['nextSession']>>>;
 export type Session = NonNullable<NextSession['session']>;
 export type SessionItem = Session['items'][number];
 export type AttemptResult = Jsonify<Awaited<ReturnType<Learning['submitAttempt']>>>;
@@ -63,7 +63,7 @@ export const api = {
   reviewDays: (topicId?: string) => request<{ days: ReviewDay[] }>('GET', `/api/review-days?${reviewQuery(topicId)}`),
   dayReview: (day: string, topicId?: string) => request<DayReview>('GET', `/api/review-days/${day}?${reviewQuery(topicId)}`),
   relearn: (knowledgePointIds: string[]) => request<{ relearned: string[] }>('POST', '/api/relearn', { knowledgePointIds }),
-  nextSession: () => request<NextSession>('POST', '/api/sessions/next'),
+  nextSession: (guidance?: string) => request<NextSession>('POST', '/api/sessions/next', { guidance }),
   submitAttempt: (body: { sessionId: string; itemId: string; answer: Answer; durationMs: number }) =>
     request<AttemptResult>('POST', '/api/attempts', body),
   rate: (attemptId: string, selfRating: 'hard' | 'good' | 'easy') =>

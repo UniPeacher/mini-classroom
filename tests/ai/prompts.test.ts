@@ -43,4 +43,14 @@ describe('提示词', () => {
     await generateReview(model, ctx, 'short_answer');
     for (const request of requests) expect(request.prompt).toContain(DIAGRAM_GUIDE);
   });
+
+  it('有补充说明时写进讲解和复习题的提示词，没有时不出现', async () => {
+    const { model, requests } = recorder();
+    const guidance = '多结合后端开发的真实例子';
+    await generateLesson(model, { ...ctx, guidance }, { explainForm: 'explain_direct', questionForm: 'mcq' });
+    await generateReview(model, { ...ctx, guidance }, 'short_answer');
+    await generateLesson(model, ctx, { explainForm: 'explain_direct', questionForm: 'mcq' });
+    for (const request of requests.slice(0, 2)) expect(request.prompt).toContain(`<guidance>\n${guidance}\n</guidance>`);
+    expect(requests[2]!.prompt).not.toContain('<guidance>');
+  });
 });

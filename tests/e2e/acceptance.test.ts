@@ -85,7 +85,7 @@ describe('学习流程的边界情况', () => {
   it('图谱还没生成好时，提示"准备中"而不是报错', async () => {
     const { call } = createHarness();
     await call('POST', '/api/topics', { title: 'TypeScript 常用技能' });
-    expect((await call('POST', '/api/sessions/next')).body).toEqual({ session: null, preparing: true });
+    expect((await call('POST', '/api/sessions/next')).body).toEqual({ session: null, preparing: true, resumed: false, guided: null });
   });
 
   it('有未结束的一节时，继续这一节，并带上已作答的结果', async () => {

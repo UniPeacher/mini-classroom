@@ -2,15 +2,19 @@ import { randomUUID } from 'node:crypto';
 import { type SQL, and, asc, eq, gte, inArray, isNull, lt } from 'drizzle-orm';
 import type { StructuredModel } from '../ai/gateway';
 import { gradeShortAnswer } from '../ai/generators';
-import { assemble } from '../domain/assemble';
+import { type PoolItem, assemble } from '../domain/assemble';
 import { cognitiveEdge } from '../domain/edge';
+import type { ExplainForm, QuestionForm } from '../domain/forms';
 import { gradeMcq } from '../domain/grading';
 import { type Outcome, type SelfRating, UNLEARNED, applyLessonOutcome, applyReviewOutcome, hasLearned, relearn } from '../domain/memory';
+import type { PoolNeed } from '../domain/plan-pool';
+import { settleWithLimit } from '../jobs/concurrency';
+import { contextOf, generateItem } from '../jobs/generate-item';
 import { enqueue } from '../jobs/queue';
 import type { Settings } from '../settings';
 import type { Grade, LessonContent, Question, ReviewContent } from '../shared/content';
 import type { Db } from '../store/db';
-import { createTopic, getItems, getTopic, loadPoints, loadPool, loadStates, markItemsUsed, saveState } from '../store/repo';
+import { createTopic, getItems, getTopic, insertItem, loadPoints, loadPool, loadStates, markItemsUsed, saveState } from '../store/repo';
 import { attempts, items, jobs, knowledgePoints, sessionItems, sessions, topics } from '../store/schema';
 
 export interface LearningDeps {
@@ -47,22 +51,33 @@ export function createLearning({ db, model, settings }: LearningDeps) {
 
   /**
    * 开始下一节：有未结束的就继续它；否则从候选池按组装规则挑选。
-   * 这里只读候选池，不调用 AI。
+   * 没有补充说明时只读候选池、不调用 AI，即时返回。
+   * 有补充说明时，先按组装规则挑好这一节的内容，再按补充说明逐项重新生成（形式不变）；
+   * 某项生成失败就沿用候选池里的原内容，不让这一节因此开不了。
    */
-  function nextSession(now: Date) {
-    const open = db.select().from(sessions).where(isNull(sessions.finishedAt)).orderBy(asc(sessions.startedAt)).get();
-    if (open) return { session: viewSession(open.id), preparing: false };
+  async function nextSession(now: Date, guidance?: string) {
+    const open = findOpenSession();
+    if (open) return { session: viewSession(open.id), preparing: false, resumed: true, guided: null };
 
-    const points = loadPoints(db);
-    const { items: picked } = assemble({
-      points,
+    let picked = assemble({
+      points: loadPoints(db),
       states: loadStates(db),
       pool: loadPool(db),
       now,
       budgetSeconds: settings.budgetSeconds,
       maxNewPerSession: settings.maxNewPerSession,
-    });
-    if (picked.length === 0) return { session: null, preparing: hasPendingWork() };
+    }).items;
+    if (picked.length === 0) return { session: null, preparing: hasPendingWork(), resumed: false, guided: null };
+
+    let guided: { applied: number; total: number } | null = null;
+    if (guidance) {
+      const result = await regenerate(picked, guidance, now);
+      picked = result.items;
+      guided = { applied: result.applied, total: picked.length };
+      // 生成要等一会儿；这期间如果已经开了别的一节（例如重复点击），以那一节为准
+      const opened = findOpenSession();
+      if (opened) return { session: viewSession(opened.id), preparing: false, resumed: true, guided: null };
+    }
 
     const sessionId = randomUUID();
     db.transaction((tx) => {
@@ -70,7 +85,7 @@ export function createLearning({ db, model, settings }: LearningDeps) {
       picked.forEach((item, position) => tx.insert(sessionItems).values({ sessionId, itemId: item.id, position }).run());
       markItemsUsed(tx, picked.map((i) => i.id));
     });
-    return { session: viewSession(sessionId), preparing: false };
+    return { session: viewSession(sessionId), preparing: false, resumed: false, guided };
   }
 
   /** 提交作答：选择题按规则判分，简答由 AI 批改。答错时立即更新记忆状态；答对时等自评。 */
@@ -240,6 +255,33 @@ export function createLearning({ db, model, settings }: LearningDeps) {
 
   // ---------- 内部 ----------
 
+  function findOpenSession() {
+    return db.select().from(sessions).where(isNull(sessions.finishedAt)).orderBy(asc(sessions.startedAt)).get();
+  }
+
+  /** 按补充说明重新生成挑好的内容：成功的存入并替换原内容，失败的沿用原内容 */
+  async function regenerate(picked: PoolItem[], guidance: string, now: Date) {
+    const points = loadPoints(db);
+    const byId = new Map(points.map((p) => [p.id, p]));
+    const results = await settleWithLimit(
+      picked.map((item) => () => generateItem(model, contextOf(byId.get(item.knowledgePointId)!, byId, guidance), needOf(item))),
+      settings.generationConcurrency,
+    );
+    const replaced = picked.map((item, i): PoolItem => {
+      const result = results[i]!;
+      if (result.status === 'rejected') {
+        console.warn(`按补充说明生成失败，沿用原内容（${item.kind} / ${item.knowledgePointId}）：${String(result.reason)}`);
+        return item;
+      }
+      const id = db.transaction((tx) => {
+        tx.update(items).set({ status: 'void' }).where(eq(items.id, item.id)).run();
+        return insertItem(tx, result.value, now);
+      });
+      return { ...item, id, estSeconds: result.value.estSeconds };
+    });
+    return { items: replaced, applied: results.filter((r) => r.status === 'fulfilled').length };
+  }
+
   /** 作答留档连同所属的内容、知识点和主题，按作答时间排序 */
   function loadRecords(filter: SQL | undefined) {
     return db
@@ -398,6 +440,14 @@ function toRecord({ attempt, item }: { attempt: typeof attempts.$inferSelect; it
     feedback: attempt.feedback,
     selfRating: attempt.selfRating,
   };
+}
+
+/** 候选池中一项内容的形式，换算成重新生成时需要的形式 */
+function needOf(item: PoolItem): PoolNeed {
+  // 形式都是本系统生成内容时写入的，取值必在 EXPLAIN_FORMS / QUESTION_FORMS 中
+  return item.kind === 'lesson'
+    ? { kind: 'lesson', knowledgePointId: item.knowledgePointId, explainForm: item.form as ExplainForm, questionForm: item.questionForm as QuestionForm }
+    : { kind: 'review', knowledgePointId: item.knowledgePointId, questionForm: item.form as QuestionForm };
 }
 
 function questionOf(item: ItemRow): Question {
