@@ -2,7 +2,8 @@
 # 启动微课堂：先启动服务端，就绪后再启动前端（前端要读取服务端实际端口）。
 # 首选端口：前端 6101、服务端 6201，被占用时自动顺延。日志与端口记录在 .run/ 下。
 set -euo pipefail
-source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+RUN_DIR="$ROOT/.run"
 cd "$ROOT"
 mkdir -p "$RUN_DIR"
 
@@ -10,6 +11,16 @@ if [[ ! -d node_modules ]]; then
   echo "缺少依赖，请先运行：pnpm install" >&2
   exit 1
 fi
+
+# 进程是否在运行：$1 为 server 或 web
+is_running() {
+  local pid_file="$RUN_DIR/$1.pid"
+  [[ -f "$pid_file" ]] && kill -0 "$(cat "$pid_file")" 2>/dev/null
+}
+
+label_of() {
+  if [[ "$1" == "server" ]]; then echo "服务端"; else echo "前端"; fi
+}
 
 # 等待进程写出端口文件：$1 进程名，$2 超时秒数。进程中途退出时立即失败。
 wait_for_port() {
