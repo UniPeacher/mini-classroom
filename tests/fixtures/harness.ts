@@ -12,7 +12,7 @@ export const DAY = 24 * 3600 * 1000;
 export function createHarness(options: FakeModelOptions = {}) {
   const db = openDb(':memory:');
   const { model, calls } = createFakeModel(options);
-  const settings = { budgetSeconds: 600, maxNewPerSession: 2 };
+  const settings = { budgetSeconds: 600, maxNewPerSession: 2, generationConcurrency: 3 };
   const clock = () => DAY1;
   const worker = createWorker(db, createHandlers({ db, model, clock, settings }), clock);
   const app = createApp({ learning: createLearning({ db, model, settings }), clock, devMode: true });

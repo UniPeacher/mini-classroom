@@ -8,7 +8,7 @@ import { jobs } from '../../src/store/schema';
 import { type FakeModelOptions, createFakeModel } from '../fixtures/fake-model';
 
 const now = new Date('2026-10-20T12:00:00Z');
-const settings = { budgetSeconds: 600, maxNewPerSession: 2 };
+const settings = { budgetSeconds: 600, maxNewPerSession: 2, generationConcurrency: 2 };
 
 function setup(options: FakeModelOptions = {}) {
   const db = openDb(':memory:');
@@ -71,6 +71,26 @@ describe('后台任务：新建主题后', () => {
     await worker.runUntilIdle();
     expect(loadPool(db)).toHaveLength(0);
     expect(db.select().from(jobs).all().every((j) => j.status === 'done')).toBe(true);
+  });
+});
+
+describe('后台任务：并发生成候选池', () => {
+  it('按配置的并发数同时生成，不超过上限', async () => {
+    const db = openDb(':memory:');
+    const { model, concurrency } = createFakeModel({ delayMs: 20 });
+    const worker = createWorker(db, createHandlers({ db, model, clock: () => now, settings }), () => now);
+    enqueue(db, 'generate_graph', { topicId: createTopic(db, 'TypeScript 常用技能', now) }, now);
+    await worker.runUntilIdle();
+    expect(loadPool(db)).toHaveLength(4);
+    expect(concurrency.peak).toBe(settings.generationConcurrency);
+  });
+
+  it('其中一项遇到网络错误时，其余照常入池；重试时只补缺少的那一项', async () => {
+    const { db, worker, calls } = setup({ networkFailures: { lesson: 1 } });
+    await worker.runUntilIdle();
+    expect(loadPool(db)).toHaveLength(4);
+    // 第一轮 4 次（1 次失败）+ 重试只补 1 次
+    expect(calls.filter((c) => c === 'lesson')).toHaveLength(5);
   });
 });
 

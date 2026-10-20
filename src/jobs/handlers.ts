@@ -13,6 +13,7 @@ import {
   markGraphFailed,
   saveGraph,
 } from '../store/repo';
+import { settleWithLimit } from './concurrency';
 import { enqueue } from './queue';
 import type { JobHandlers } from './worker';
 
@@ -78,18 +79,22 @@ export function createHandlers(deps: HandlerDeps): JobHandlers {
           newCount: SESSIONS_AHEAD * deps.settings.maxNewPerSession,
         });
         const byId = new Map(points.map((p) => [p.id, p]));
-        for (const need of needs) {
-          try {
-            await fulfill(need, contextOf(byId.get(need.knowledgePointId)!, byId));
-          } catch (error) {
-            // 单项内容结构始终不合法：丢弃这一项，继续生成其他内容
-            if (error instanceof AiOutputError) {
-              console.warn(`丢弃一项候选内容（${need.kind} / ${need.knowledgePointId}）：${error.message}`);
-              continue;
-            }
-            throw error;
+        const results = await settleWithLimit(
+          needs.map((need) => () => fulfill(need, contextOf(byId.get(need.knowledgePointId)!, byId))),
+          deps.settings.generationConcurrency,
+        );
+        // 单项内容结构始终不合法：丢弃这一项。其他错误（如网络）让整个任务重试；
+        // 已生成的内容已入池，重试时只补缺少的部分
+        let retryable: unknown;
+        results.forEach((result, i) => {
+          if (result.status === 'fulfilled') return;
+          if (result.reason instanceof AiOutputError) {
+            console.warn(`丢弃一项候选内容（${needs[i]!.kind} / ${needs[i]!.knowledgePointId}）：${result.reason.message}`);
+          } else {
+            retryable ??= result.reason;
           }
-        }
+        });
+        if (retryable !== undefined) throw retryable;
       },
     },
   };

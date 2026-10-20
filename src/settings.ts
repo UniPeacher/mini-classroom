@@ -4,11 +4,14 @@ export interface Settings {
   budgetSeconds: number;
   /** 每节最多引入的新知识点数 */
   maxNewPerSession: number;
+  /** 补候选池时同时向模型发起的请求数 */
+  generationConcurrency: number;
 }
 
 export function loadSettings(env: NodeJS.ProcessEnv = process.env): Settings {
   return {
     budgetSeconds: Number(env.SESSION_BUDGET_SECONDS ?? 600),
     maxNewPerSession: Number(env.MAX_NEW_PER_SESSION ?? 2),
+    generationConcurrency: Number(env.GENERATION_CONCURRENCY ?? 3),
   };
 }

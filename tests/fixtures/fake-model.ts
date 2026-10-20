@@ -43,6 +43,8 @@ export interface FakeModelOptions {
   invalid?: string[];
   /** 对这些结构名称抛出网络错误，次数用完后恢复 */
   networkFailures?: Record<string, number>;
+  /** 每次请求的模拟耗时（毫秒） */
+  delayMs?: number;
 }
 
 /**
@@ -52,6 +54,7 @@ export interface FakeModelOptions {
 export function createFakeModel(options: FakeModelOptions = {}) {
   const calls: string[] = [];
   const networkFailures = { ...options.networkFailures };
+  const concurrency = { current: 0, peak: 0 };
   const candidates = (name: string, prompt: string): unknown[] => {
     switch (name) {
       case 'knowledge_graph':
@@ -68,21 +71,33 @@ export function createFakeModel(options: FakeModelOptions = {}) {
   };
 
   const model: StructuredModel = {
-    async generate<T>({ name, schema, prompt }: StructuredRequest<T>): Promise<T> {
-      calls.push(name);
-      if ((networkFailures[name] ?? 0) > 0) {
-        networkFailures[name]! -= 1;
-        throw new Error('fetch failed');
+    async generate<T>(request: StructuredRequest<T>): Promise<T> {
+      concurrency.current += 1;
+      concurrency.peak = Math.max(concurrency.peak, concurrency.current);
+      try {
+        if (options.delayMs) await new Promise((resolve) => setTimeout(resolve, options.delayMs));
+        return respond(request);
+      } finally {
+        concurrency.current -= 1;
       }
-      if (options.invalid?.includes(name)) throw new AiOutputError(name, 3, new Error('结构不合法'));
-      for (const candidate of candidates(name, prompt)) {
-        const parsed = schema.safeParse(candidate);
-        if (parsed.success) return parsed.data;
-      }
-      throw new Error(`假模型没有与 ${name} 结构匹配的内容`);
     },
   };
-  return { model, calls };
+
+  function respond<T>({ name, schema, prompt }: StructuredRequest<T>): T {
+    calls.push(name);
+    if ((networkFailures[name] ?? 0) > 0) {
+      networkFailures[name]! -= 1;
+      throw new Error('fetch failed');
+    }
+    if (options.invalid?.includes(name)) throw new AiOutputError(name, 3, new Error('结构不合法'));
+    for (const candidate of candidates(name, prompt)) {
+      const parsed = schema.safeParse(candidate);
+      if (parsed.success) return parsed.data;
+    }
+    throw new Error(`假模型没有与 ${name} 结构匹配的内容`);
+  }
+
+  return { model, calls, concurrency };
 }
 
 const correct = (): Grade => ({ correct: true, errorType: null, feedback: '答得好' });
