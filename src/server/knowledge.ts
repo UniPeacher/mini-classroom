@@ -65,7 +65,8 @@ export function createKnowledge({ db }: KnowledgeDeps) {
             stage: state.stage,
             stageLabel: STAGE_LABEL[state.stage],
             onEdge: edgeIds.has(p.id),
-            fog: state.stage === 'unlearned' && !edgeIds.has(p.id),
+            // 迷雾：能新学的主题里，前置还没学会的未学知识点。主题暂停或摸底未完成时，未学的只显示为未学
+            fog: state.stage === 'unlearned' && !edgeIds.has(p.id) && p.learnable !== false,
             decomposed: p.decomposed ?? false,
             nextReviewAt: state.card?.due ?? null,
             prerequisiteIds: p.prerequisiteIds,

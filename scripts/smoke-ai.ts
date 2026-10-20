@@ -4,7 +4,7 @@
  */
 import { existsSync } from 'node:fs';
 import { modelFromEnv } from '../src/ai/gateway';
-import { generateGraph, generateLesson, generateReview, gradeShortAnswer } from '../src/ai/generators';
+import { generateGraph, generateLesson, generateReview, gradeOpenAnswer } from '../src/ai/generators';
 
 if (existsSync('.env')) process.loadEnvFile('.env');
 
@@ -45,8 +45,8 @@ console.log(JSON.stringify(review.question, null, 2));
 
 if (review.question.type === 'short_answer') {
   const question = review.question;
-  const wrong = await timed('批改：一个错误作答', () => gradeShortAnswer(model, ctx, question, '不太记得了，好像和 any 一样？'));
+  const wrong = await timed('批改：一个错误作答', () => gradeOpenAnswer(model, ctx, question, '不太记得了，好像和 any 一样？'));
   console.log(JSON.stringify(wrong, null, 2));
-  const right = await timed('批改：参考答案本身', () => gradeShortAnswer(model, ctx, question, question.referenceAnswer));
+  const right = await timed('批改：参考答案本身', () => gradeOpenAnswer(model, ctx, question, question.referenceAnswer));
   console.log(JSON.stringify(right, null, 2));
 }

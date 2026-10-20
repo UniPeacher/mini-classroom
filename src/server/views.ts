@@ -28,6 +28,7 @@ export class LearningError extends Error {
 }
 
 export function formLabel(form: string): string {
+  if (form === 'connection') return '联结练习';
   return FORM_INFO[form as Form]?.label ?? form;
 }
 

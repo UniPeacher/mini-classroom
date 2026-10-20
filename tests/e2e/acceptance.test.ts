@@ -145,3 +145,20 @@ describe('学习流程的边界情况', () => {
     expect((await call('POST', '/api/topics', { title: '  ' })).status).toBe(400);
   });
 });
+
+describe('预览下一节', () => {
+  it('不开始、不改动数据，只说明此刻打开会学什么、大约多久', async () => {
+    const { call, calls, startTopic } = createHarness();
+    await startTopic();
+    const callsBefore = calls.length;
+    const preview = (await call('GET', '/api/sessions/preview?timeZone=UTC')).body;
+    expect(preview).toMatchObject({ open: null, capped: false, preparing: false, sessionsToday: 0, counts: { new: 2, review: 0 } });
+    expect(preview.items.map((i: any) => i.title)).toEqual(['联合类型', 'unknown 类型收窄']);
+    expect(preview.estMinutes).toBe(5);
+    expect(calls.length).toBe(callsBefore);
+    // 预览不会开始一节：之后正式开始的就是预览里的内容
+    const session = (await call('POST', '/api/sessions/next')).body.session;
+    expect(session.items.map((i: any) => i.title)).toEqual(['联合类型', 'unknown 类型收窄']);
+    expect((await call('GET', '/api/sessions/preview')).body.open.id).toBe(session.id);
+  });
+});

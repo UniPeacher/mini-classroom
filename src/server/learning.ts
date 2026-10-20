@@ -126,18 +126,7 @@ export function createLearning({ db, model, settings: currentSettings }: Learnin
     const mobile = options.device === 'mobile';
     const points = loadPoints(db);
     const states = loadStates(db);
-    const pool = loadPool(db);
-    let picked = assemble({
-      points,
-      states,
-      pool,
-      now,
-      budgetSeconds: settings.budgetSeconds,
-      maxNewPerSession: settings.maxNewPerSession,
-      newTopicId: chooseTopicForNew(points, states, pool, mobile),
-      mobile,
-      timeFactor: currentTimeFactor(),
-    }).items;
+    let picked = pickFromPool(now, points, states, mobile, settings).items;
     if (picked.length === 0) return { ...empty, preparing: hasPendingWork() };
 
     let guided: { applied: number; total: number } | null = null;
@@ -170,6 +159,58 @@ export function createLearning({ db, model, settings: currentSettings }: Learnin
       markItemsUsed(tx, picked.map((i) => i.id));
     });
     return { ...empty, session: viewSession(sessionId), guided };
+  }
+
+  /**
+   * 预览下一节：不开始、不改动任何数据，只说明此刻打开会学什么、大约多久。
+   * 首页据此回答"下一节准备好了吗"。
+   */
+  function previewNext(now: Date, options: Pick<NextSessionOptions, 'device' | 'timeZone'> = {}) {
+    const settings = currentSettings();
+    const open = findOpenSession();
+    const sessionsToday = finishedToday(now, options.timeZone);
+    const capped = !open && settings.dailySessionCap !== null && sessionsToday >= settings.dailySessionCap;
+    const points = loadPoints(db);
+    const states = loadStates(db);
+    const { items: picked, newPaused, timeFactor: factor } = pickFromPool(now, points, states, options.device === 'mobile', settings);
+    const byId = new Map(points.map((p) => [p.id, p]));
+    const purposes = picked.map((item) => purposeOf(item, states.get(item.knowledgePointId) ?? UNLEARNED));
+    const count = (purpose: ItemPurpose) => purposes.filter((p) => p === purpose).length;
+    const dueCount = points.filter((p) => {
+      const card = states.get(p.id)?.card;
+      return card != null && hasSchedule((states.get(p.id) ?? UNLEARNED).stage) && card.due.getTime() <= now.getTime();
+    }).length;
+    const openView = open ? viewSession(open.id) : null;
+    return {
+      open: openView
+        ? {
+            id: openView.id,
+            startedAt: openView.startedAt,
+            items: openView.items.map((item) => ({
+              title: item.title,
+              topicTitle: item.topicTitle,
+              purpose: item.purpose,
+              formLabel: item.formLabel,
+              done: item.attempt !== null && !item.attempt.needsRating,
+            })),
+          }
+        : null,
+      capped,
+      sessionsToday,
+      dailySessionCap: settings.dailySessionCap,
+      preparing: picked.length === 0 && hasPendingWork(),
+      newPaused,
+      dueCount,
+      counts: { review: count('review'), contrast: count('contrast'), spotCheck: count('spot_check'), advance: count('advance'), new: count('new') },
+      estMinutes: Math.max(1, Math.round(picked.reduce((sum, item) => sum + item.estSeconds * factor, 0) / 60)),
+      budgetMinutes: Math.round(settings.budgetSeconds / 60),
+      items: picked.map((item, i) => ({
+        title: byId.get(item.knowledgePointId)?.title ?? '',
+        topicTitle: byId.get(item.knowledgePointId)?.topicTitle ?? '',
+        purpose: purposes[i]!,
+        formLabel: formLabel(item.form),
+      })),
+    };
   }
 
   // ---------- 作答 ----------
@@ -378,6 +419,24 @@ export function createLearning({ db, model, settings: currentSettings }: Learnin
       .where(isNotNull(sessions.finishedAt))
       .all()
       .filter((s) => dayOf(s.finishedAt!) === today).length;
+  }
+
+  /** 按组装规则从候选池挑出一节（不写入数据库） */
+  function pickFromPool(now: Date, points: PointInfo[], states: Map<string, MemoryState>, mobile: boolean, settings: Settings) {
+    const pool = loadPool(db);
+    const factor = currentTimeFactor();
+    const result = assemble({
+      points,
+      states,
+      pool,
+      now,
+      budgetSeconds: settings.budgetSeconds,
+      maxNewPerSession: settings.maxNewPerSession,
+      newTopicId: chooseTopicForNew(points, states, pool, mobile),
+      mobile,
+      timeFactor: factor,
+    });
+    return { ...result, timeFactor: factor };
   }
 
   /** 这一节的新知识点来自哪个主题：在候选池里备有新学内容的主题之间，按优先级轮换 */
@@ -597,6 +656,7 @@ export function createLearning({ db, model, settings: currentSettings }: Learnin
     listTopics,
     updateTopic,
     nextSession,
+    previewNext,
     submitAttempt,
     rateAttempt,
     appealAttempt,

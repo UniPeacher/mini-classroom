@@ -27,6 +27,7 @@ const NextSessionBody = z.object({
   device: z.enum(['desktop', 'mobile']).optional(),
   timeZone: z.string().optional(),
 });
+const PreviewQuery = z.object({ device: z.enum(['desktop', 'mobile']).optional(), timeZone: z.string().optional() });
 const AttemptBody = z.object({
   sessionId: z.string(),
   itemId: z.string(),
@@ -92,6 +93,10 @@ export function createApp({ services, clock, devMode, frontendUrl }: AppDeps) {
 
   // ---------- 微课堂 ----------
 
+  app.get('/api/sessions/preview', (c) => {
+    const { device, timeZone } = PreviewQuery.parse(c.req.query());
+    return c.json(learning.previewNext(now(c), { device, timeZone }));
+  });
   app.post('/api/sessions/next', async (c) => {
     const { guidance, device, timeZone } = await body(c, NextSessionBody);
     return c.json(await learning.nextSession(now(c), { guidance: guidance || undefined, device, timeZone }));

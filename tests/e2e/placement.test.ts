@@ -39,6 +39,9 @@ describe('摸底诊断', () => {
     const { call, placement } = await newTopic();
     expect((await call('GET', placement())).body).toMatchObject({ status: 'pending', question: null });
     expect((await call('POST', '/api/sessions/next')).body.session).toBeNull();
+    // 认知地图上这些知识点只是"未学"，不是"前置没学会"的迷雾
+    const map = (await call('GET', '/api/map')).body;
+    expect(map.points.every((p: any) => p.stage === 'unlearned' && !p.onEdge && !p.fog)).toBe(true);
   });
 
   it('提交背景自述后，后台备好候选题；题目不带答案，另有"不知道"由页面提供', async () => {
