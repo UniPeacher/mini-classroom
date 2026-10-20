@@ -1,6 +1,6 @@
 import { State, createEmptyCard } from 'ts-fsrs';
 import { describe, expect, it } from 'vitest';
-import { BACKLOG_SESSIONS, type PoolItem, assemble } from '../../src/domain/assemble';
+import { BACKLOG_SESSIONS, MAX_SPOT_CHECKS, type PoolItem, assemble } from '../../src/domain/assemble';
 import type { GraphPoint } from '../../src/domain/edge';
 import { type MemoryState, UNLEARNED } from '../../src/domain/memory';
 
@@ -19,7 +19,7 @@ function recall(overdueDays: number, lastQuestionForm = 'mcq'): MemoryState {
     last_review: lastReview,
     due: new Date(now.getTime() - overdueDays * DAY),
   };
-  return { stage: 'recall', card, lastExplainForm: 'explain_direct', lastQuestionForm };
+  return { ...UNLEARNED, stage: 'recall', card, lastExplainForm: 'explain_direct', lastQuestionForm };
 }
 
 function notDue(): MemoryState {
@@ -148,5 +148,61 @@ describe('组装规则', () => {
     ];
     const { items } = assemble({ ...base, points, states, pool });
     expect(items.map((i) => i.knowledgePointId)).toEqual(['r1', 'u1', 'n1', 'r2', 'n2']);
+  });
+});
+
+describe('组装规则：四阶段与多主题', () => {
+  const inferred: MemoryState = { ...UNLEARNED, stage: 'inferred' };
+
+  it('上次答错属于误解的到期知识点，排对比讲解而不是普通复习题', () => {
+    const states = new Map([['a', { ...recall(1), pendingContrast: true }]]);
+    const pool = [review('a'), lesson('a', 'explain_contrast')];
+    expect(ids(assemble({ ...base, points: [point('a', 1)], states, pool }).items)).toEqual(['l-a-explain_contrast']);
+  });
+
+  it('对比讲解不参与日常挑选：没有误解时照常出复习题', () => {
+    const states = new Map([['a', recall(1)]]);
+    const pool = [lesson('a', 'explain_contrast'), review('a')];
+    expect(ids(assemble({ ...base, points: [point('a', 1)], states, pool }).items)).toEqual(['r-a-short_answer']);
+  });
+
+  it(`推断掌握的知识点每节最多抽查 ${MAX_SPOT_CHECKS} 个`, () => {
+    const points = [point('i1', 1), point('i2', 2), point('i3', 3)];
+    const states = new Map(points.map((p) => [p.id, inferred]));
+    const pool = points.map((p) => review(p.id, 'mcq'));
+    expect(assemble({ ...base, points, states, pool }).items.map((i) => i.knowledgePointId)).toEqual(['i1', 'i2']);
+  });
+
+  it('前置还没学会的理解阶段知识点（拆解后）先不重讲', () => {
+    const points = [point('basic', 1), point('hard', 2, ['basic'])];
+    const states = new Map<string, MemoryState>([['hard', { ...UNLEARNED, stage: 'understand', lastExplainForm: 'explain_direct' }]]);
+    const pool = [lesson('basic'), lesson('hard', 'explain_analogy')];
+    expect(assemble({ ...base, points, states, pool }).items.map((i) => i.knowledgePointId)).toEqual(['basic']);
+  });
+
+  it('新知识点只来自这一节选定的主题', () => {
+    const points = [
+      { ...point('t1-a', 1), topicId: 't1' },
+      { ...point('t2-a', 2), topicId: 't2' },
+      { ...point('t2-b', 3), topicId: 't2' },
+    ];
+    const pool = points.map((p) => lesson(p.id, 'explain_direct', 100));
+    const { items } = assemble({ ...base, points, states: new Map(), pool, newTopicId: 't2' });
+    expect(items.map((i) => i.knowledgePointId)).toEqual(['t2-a', 't2-b']);
+  });
+
+  it('手机上只挑适合手机的形式；桌面上优先补全、修正这类需要键盘的形式', () => {
+    const states = new Map([['a', { ...recall(1), stage: 'apply' as const, lastQuestionForm: 'complete' }]]);
+    const pool = [review('a', 'pick_line'), review('a', 'fix')];
+    expect(ids(assemble({ ...base, points: [point('a', 1)], states, pool, mobile: true }).items)).toEqual(['r-a-pick_line']);
+    expect(ids(assemble({ ...base, points: [point('a', 1)], states, pool }).items)).toEqual(['r-a-fix']);
+  });
+
+  it('按校准系数换算时长：实际用时是预估的 2 倍时，放得下的内容减半', () => {
+    const points = reviewsFor(10);
+    const states = new Map(points.map((p, i) => [p.id, recall(i + 1)]));
+    const pool = points.map((p) => review(p.id, 'short_answer', 60));
+    expect(assemble({ ...base, points, states, pool, maxNewPerSession: 0 }).items).toHaveLength(10);
+    expect(assemble({ ...base, points, states, pool, maxNewPerSession: 0, timeFactor: 2 }).items).toHaveLength(5);
   });
 });

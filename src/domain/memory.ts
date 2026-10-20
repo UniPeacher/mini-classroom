@@ -1,10 +1,18 @@
 import { type Card, type Grade, Rating, createEmptyCard, fsrs } from 'ts-fsrs';
+import type { CheckStage } from './forms';
 
-export type Stage = 'unlearned' | 'understand' | 'recall' | 'apply' | 'retain';
+/**
+ * 掌握阶段：理解 → 回忆 → 应用 → 保持。
+ * inferred（推断掌握）：摸底时没有直接考、但由前置关系推断已会，先不教，抽查一题再定。
+ */
+export type Stage = 'unlearned' | 'inferred' | 'understand' | 'recall' | 'apply' | 'retain';
 export type SelfRating = 'hard' | 'good' | 'easy';
+export type ErrorType = 'misconception' | 'forgetting';
 
-/** 一次作答的结果：答错时不自评；答对时由用户自评难度。 */
-export type Outcome = { correct: false } | { correct: true; selfRating: SelfRating };
+/** 一次作答的结果：答错时不自评，带上错误类型；答对时由用户自评难度。 */
+export type Outcome =
+  | { correct: false; errorType?: ErrorType; misconception?: string | null }
+  | { correct: true; selfRating: SelfRating };
 
 /** 记忆状态：按"用户 × 知识点"只记一份。 */
 export interface MemoryState {
@@ -12,6 +20,12 @@ export interface MemoryState {
   card: Card | null;
   lastExplainForm: string | null;
   lastQuestionForm: string | null;
+  /** 理解、回忆阶段连续答错的次数，达到阈值时触发拆解 */
+  failStreak: number;
+  /** 上次答错属于误解：下一次讲解或复习改用对比讲解 */
+  pendingContrast: boolean;
+  /** 最近一次误解的内容，供对比讲解有针对性地讲 */
+  lastMisconception: string | null;
 }
 
 export const UNLEARNED: MemoryState = {
@@ -19,7 +33,19 @@ export const UNLEARNED: MemoryState = {
   card: null,
   lastExplainForm: null,
   lastQuestionForm: null,
+  failStreak: 0,
+  pendingContrast: false,
+  lastMisconception: null,
 };
+
+/** 回忆阶段答对后，记忆稳定性达到这么多天，进入应用阶段 */
+export const APPLY_STABILITY_DAYS = 7;
+/** 应用阶段答对后，记忆稳定性达到这么多天，进入保持阶段 */
+export const RETAIN_STABILITY_DAYS = 30;
+/** 摸底时直接答对的知识点，这么多天后再验证一次（需求：两三周后） */
+export const PLACEMENT_VERIFY_DAYS = 17;
+/** 理解或回忆阶段连续答错这么多次，触发拆解 */
+export const DECOMPOSE_FAIL_STREAK = 3;
 
 // 微课堂之间通常相隔数小时，不使用分钟级的短期学习步；关闭随机扰动，保证调度可复现。
 export const scheduler = fsrs({ enable_short_term: false, enable_fuzz: false });
@@ -31,14 +57,27 @@ export function toGrade(outcome: Outcome): Grade {
   return map[outcome.selfRating];
 }
 
-/** 已进入回忆及之后的阶段，视为"学过"。 */
+/** 已学过：进入回忆及之后的阶段，或推断已会。前置都学过的知识点才进入认知边缘。 */
 export function hasLearned(stage: Stage): boolean {
+  return stage === 'inferred' || hasSchedule(stage);
+}
+
+/** 有间隔调度（FSRS 卡片）的阶段 */
+export function hasSchedule(stage: Stage): boolean {
   return stage === 'recall' || stage === 'apply' || stage === 'retain';
+}
+
+/** 出题时按哪个阶段的形式池挑选：推断掌握的抽查按回忆阶段出题 */
+export function checkStageOf(stage: Stage): CheckStage {
+  if (stage === 'unlearned' || stage === 'understand') return 'understand';
+  if (stage === 'inferred') return 'recall';
+  return stage;
 }
 
 /**
  * 讲解后的当场小题作答完毕。
- * 答对：进入回忆阶段，开始间隔调度。答错：留在理解阶段，下次换一种讲解形式重讲。
+ * 答对：进入回忆阶段，开始间隔调度。答错：留在理解阶段，下次换一种讲解形式重讲；
+ * 错误类型是误解时，下次改用对比讲解。
  */
 export function applyLessonOutcome(
   state: MemoryState,
@@ -48,21 +87,69 @@ export function applyLessonOutcome(
 ): MemoryState {
   if (hasLearned(state.stage)) throw new Error(`知识点已处于 ${state.stage} 阶段，不能再按讲解结果更新`);
   const base = { lastExplainForm: forms.explainForm, lastQuestionForm: forms.questionForm };
-  if (!outcome.correct) return { ...base, stage: 'understand', card: null };
+  if (!outcome.correct) return { ...state, ...base, ...afterWrong(state, outcome), stage: 'understand', card: null };
   const card = scheduler.next(createEmptyCard(now), now, toGrade(outcome)).card;
-  return { ...base, stage: 'recall', card };
+  return { ...state, ...base, ...afterRight(), stage: 'recall', card };
 }
 
-/** 复习题作答完毕：按记忆评分更新卡片；答错时间隔自动缩短，阶段不变。 */
-export function applyReviewOutcome(
-  state: MemoryState,
-  questionForm: string,
-  outcome: Outcome,
-  now: Date,
-): MemoryState {
-  if (!hasLearned(state.stage) || state.card === null) throw new Error('知识点尚未进入回忆阶段，不能按复习结果更新');
+/**
+ * 复习题（含对比讲解后的小题、推断掌握的抽查）作答完毕。
+ * - 推断掌握：答对视为已掌握，进入回忆阶段；答错从理解阶段开始教。
+ * - 回忆、应用、保持：按记忆评分更新卡片。答对且记忆足够稳定时进入下一阶段；
+ *   答错退回回忆阶段，间隔由 FSRS 缩短。
+ */
+export function applyReviewOutcome(state: MemoryState, questionForm: string, outcome: Outcome, now: Date): MemoryState {
+  if (state.stage === 'inferred') {
+    if (!outcome.correct) return { ...state, ...afterWrong(state, outcome), lastQuestionForm: questionForm, stage: 'understand', card: null };
+    const card = scheduler.next(createEmptyCard(now), now, toGrade(outcome)).card;
+    return { ...state, ...afterRight(), lastQuestionForm: questionForm, stage: 'recall', card };
+  }
+  if (!hasSchedule(state.stage) || state.card === null) throw new Error('知识点尚未进入回忆阶段，不能按复习结果更新');
   const card = scheduler.next(state.card, now, toGrade(outcome)).card;
-  return { ...state, card, lastQuestionForm: questionForm };
+  if (!outcome.correct) return { ...state, ...afterWrong(state, outcome), card, lastQuestionForm: questionForm, stage: 'recall' };
+  return { ...state, ...afterRight(), card, lastQuestionForm: questionForm, stage: promote(state.stage, card) };
+}
+
+/** 答对后是否进入下一阶段：看答对后的记忆稳定性（天） */
+function promote(stage: Stage, card: Card): Stage {
+  if (stage === 'recall' && card.stability >= APPLY_STABILITY_DAYS) return 'apply';
+  if (stage === 'apply' && card.stability >= RETAIN_STABILITY_DAYS) return 'retain';
+  return stage;
+}
+
+function afterRight(): Pick<MemoryState, 'failStreak' | 'pendingContrast' | 'lastMisconception'> {
+  return { failStreak: 0, pendingContrast: false, lastMisconception: null };
+}
+
+/** 答错后的计数与对比教学标记：只有理解、回忆阶段的失败计入连续答错 */
+function afterWrong(state: MemoryState, outcome: Extract<Outcome, { correct: false }>) {
+  const counts = state.stage === 'unlearned' || state.stage === 'understand' || state.stage === 'recall';
+  const misconception = outcome.errorType === 'misconception';
+  return {
+    failStreak: counts ? state.failStreak + 1 : 0,
+    pendingContrast: misconception,
+    lastMisconception: misconception ? (outcome.misconception ?? state.lastMisconception) : null,
+  };
+}
+
+/** 连续答错达到阈值、且仍在理解或回忆阶段：需要拆解出更基础的前置知识点 */
+export function needsDecomposition(state: MemoryState): boolean {
+  return state.failStreak >= DECOMPOSE_FAIL_STREAK && (state.stage === 'understand' || state.stage === 'recall');
+}
+
+/**
+ * 摸底诊断的结果换算成初始记忆状态：
+ * - 直接答对：不再教，进入回忆阶段，两三周后到期再验证一次；
+ * - 推断掌握：先不教，后续抽查；
+ * - 答错或选"不知道"：按未学处理。
+ */
+export function fromPlacement(result: 'correct' | 'inferred' | 'unknown', now: Date): MemoryState {
+  if (result === 'unknown') return UNLEARNED;
+  if (result === 'inferred') return { ...UNLEARNED, stage: 'inferred' };
+  // 按"轻松"建卡，再把到期时间定在两三周后（FSRS 默认参数下"轻松"只给 8 天左右）
+  const card = scheduler.next(createEmptyCard(now), now, Rating.Easy).card;
+  const due = new Date(now.getTime() + PLACEMENT_VERIFY_DAYS * 24 * 3600 * 1000);
+  return { ...UNLEARNED, stage: 'recall', card: { ...card, due, scheduled_days: PLACEMENT_VERIFY_DAYS } };
 }
 
 /**
@@ -71,12 +158,12 @@ export function applyReviewOutcome(
  */
 export function relearn(state: MemoryState): MemoryState {
   if (!hasLearned(state.stage)) throw new Error(`知识点处于 ${state.stage} 阶段，还没学过，不能重新学习`);
-  return { ...state, stage: 'understand', card: null };
+  return { ...state, stage: 'understand', card: null, failStreak: 0 };
 }
 
 /** 此刻是否到期复习。 */
 export function isDue(state: MemoryState, now: Date): boolean {
-  return hasLearned(state.stage) && state.card !== null && state.card.due.getTime() <= now.getTime();
+  return hasSchedule(state.stage) && state.card !== null && state.card.due.getTime() <= now.getTime();
 }
 
 /** 此刻还能想起来的概率，越低越容易忘。 */

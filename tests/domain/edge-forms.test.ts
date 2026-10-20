@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { type GraphPoint, cognitiveEdge } from '../../src/domain/edge';
-import { EXPLAIN_FORMS, QUESTION_FORMS, nextForm } from '../../src/domain/forms';
+import { CORE_FORMS, EXPLAIN_FORMS, STAGE_QUESTION_FORMS, explainFormsFor, nextForm, pickForm, questionFormsFor } from '../../src/domain/forms';
 import { type MemoryState, UNLEARNED } from '../../src/domain/memory';
 
 const at = (stage: MemoryState['stage']): MemoryState => ({ ...UNLEARNED, stage });
@@ -30,13 +30,49 @@ describe('认知边缘', () => {
 });
 
 describe('形式轮换', () => {
+  const recall = STAGE_QUESTION_FORMS.recall.forms;
+
   it('没有上次记录时取第一种', () => {
-    expect(nextForm(QUESTION_FORMS, null)).toBe('mcq');
+    expect(nextForm(recall, null)).toBe('mcq');
   });
 
   it('总是与上次不同，并循环轮换', () => {
-    expect(nextForm(QUESTION_FORMS, 'mcq')).toBe('short_answer');
-    expect(nextForm(QUESTION_FORMS, 'short_answer')).toBe('mcq');
-    expect(nextForm(EXPLAIN_FORMS, 'explain_counterexample')).toBe('explain_direct');
+    expect(nextForm(recall, 'mcq')).toBe('short_answer');
+    expect(nextForm(recall, 'pick_line')).toBe('mcq');
+    expect(nextForm(EXPLAIN_FORMS, EXPLAIN_FORMS.at(-1)!)).toBe('explain_direct');
+  });
+
+  it('调高偏好的形式优先，但不与上次重复', () => {
+    expect(pickForm(EXPLAIN_FORMS, null, ['explain_diagram'])).toBe('explain_diagram');
+    expect(pickForm(EXPLAIN_FORMS, 'explain_diagram', ['explain_diagram'])).toBe('explain_steps');
+  });
+
+  it('只有一种可用时，即使与上次相同也用它', () => {
+    expect(pickForm(['fix'], 'fix')).toBe('fix');
+  });
+});
+
+describe('形式偏好', () => {
+  it('各掌握阶段有自己的形式池：应用阶段是补全、修正、找错', () => {
+    expect(questionFormsFor('apply', { blocked: [], boosted: [] })).toEqual(['fix', 'complete', 'pick_line']);
+  });
+
+  it('屏蔽的形式不再出现，但核心检验形式屏蔽不掉', () => {
+    const prefs = { blocked: ['pick_line', 'fix', 'complete'], boosted: [] };
+    expect(questionFormsFor('apply', prefs)).toEqual(['fix']);
+    expect(questionFormsFor('recall', prefs)).toEqual(['mcq', 'short_answer']);
+    expect(CORE_FORMS).toContain('fix');
+  });
+
+  it('手机上只出适合手机的形式：应用阶段只剩点选错误行', () => {
+    expect(questionFormsFor('apply', { blocked: [], boosted: [] }, true)).toEqual(['pick_line']);
+  });
+
+  it('手机上可用的形式都被屏蔽时，退回适合手机的选择题', () => {
+    expect(questionFormsFor('apply', { blocked: ['pick_line'], boosted: [] }, true)).toEqual(['mcq']);
+  });
+
+  it('讲解形式全部屏蔽时退回直接讲解', () => {
+    expect(explainFormsFor({ blocked: [...EXPLAIN_FORMS], boosted: [] })).toEqual(['explain_direct']);
   });
 });

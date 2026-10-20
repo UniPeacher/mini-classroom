@@ -13,7 +13,7 @@ const point = (id: string, position: number, prerequisiteIds: string[] = []): Gr
 
 function recallDueIn(hours: number, lastQuestionForm = 'mcq'): MemoryState {
   const card = { ...createEmptyCard(now), state: State.Review, reps: 1, stability: 2, due: new Date(now.getTime() + hours * HOUR) };
-  return { stage: 'recall', card, lastExplainForm: 'explain_direct', lastQuestionForm };
+  return { ...UNLEARNED, stage: 'recall', card, lastExplainForm: 'explain_direct', lastQuestionForm };
 }
 
 const item = (knowledgePointId: string, kind: PoolItem['kind'], form: string, questionForm = form): PoolItem => ({
@@ -83,5 +83,47 @@ describe('候选池补充规划', () => {
     expect(planPool({ ...base, points: [point('a', 1)], states, pool: [item('a', 'lesson', 'explain_direct')] })).toEqual([
       { kind: 'lesson', knowledgePointId: 'a', explainForm: 'explain_analogy', questionForm: 'mcq' },
     ]);
+  });
+});
+
+describe('候选池补充规划：四阶段、形式偏好与手机', () => {
+  it('应用阶段即将到期：备一项修正题，另备一项适合手机的点选错误行', () => {
+    const states = new Map([['a', { ...recallDueIn(1, 'pick_line'), stage: 'apply' as const }]]);
+    expect(planPool({ ...base, points: [point('a', 1)], states, pool: [] })).toEqual([
+      { kind: 'review', knowledgePointId: 'a', questionForm: 'fix' },
+      { kind: 'review', knowledgePointId: 'a', questionForm: 'pick_line' },
+    ]);
+  });
+
+  it('上次答错属于误解：备对比讲解，不备普通复习题', () => {
+    const states = new Map([['a', { ...recallDueIn(1, 'mcq'), pendingContrast: true }]]);
+    expect(planPool({ ...base, points: [point('a', 1)], states, pool: [] })).toEqual([
+      { kind: 'lesson', knowledgePointId: 'a', explainForm: 'explain_contrast', questionForm: 'short_answer' },
+    ]);
+  });
+
+  it('推断掌握的知识点备抽查题（适合手机的选择题）', () => {
+    const states = new Map<string, MemoryState>([['a', { ...UNLEARNED, stage: 'inferred' }]]);
+    expect(planPool({ ...base, points: [point('a', 1)], states, pool: [] })).toEqual([
+      { kind: 'review', knowledgePointId: 'a', questionForm: 'mcq' },
+    ]);
+  });
+
+  it('调高偏好的讲解形式用于新知识点；屏蔽的检验形式不出现', () => {
+    const prefs = { blocked: ['short_answer'], boosted: ['explain_diagram'] };
+    const needs = planPool({ ...base, points: [point('a', 1), point('b', 2)], states: new Map(), pool: [], prefs });
+    expect(needs).toEqual([
+      { kind: 'lesson', knowledgePointId: 'a', explainForm: 'explain_diagram', questionForm: 'mcq' },
+      { kind: 'lesson', knowledgePointId: 'b', explainForm: 'explain_diagram', questionForm: 'mcq' },
+    ]);
+  });
+
+  it('每个能新学的主题各备一份新知识点', () => {
+    const points = [
+      { ...point('t1-a', 1), topicId: 't1' },
+      { ...point('t2-a', 2), topicId: 't2' },
+    ];
+    const needs = planPool({ ...base, points, states: new Map(), pool: [], newCount: 1 });
+    expect(needs.map((n) => n.knowledgePointId)).toEqual(['t1-a', 't2-a']);
   });
 });

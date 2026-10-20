@@ -75,7 +75,6 @@ describe('回忆阶段：复习', () => {
     const firstInterval = state.card!.due.getTime() - now.getTime();
     const reviewAt = state.card!.due;
     const next = applyReviewOutcome(state, 'short_answer', { correct: true, selfRating: 'good' }, reviewAt);
-    expect(next.stage).toBe('recall');
     expect(next.card!.due.getTime() - reviewAt.getTime()).toBeGreaterThan(firstInterval);
     expect(next.lastQuestionForm).toBe('short_answer');
   });
@@ -98,7 +97,7 @@ describe('回忆阶段：复习', () => {
 describe('重新学习', () => {
   it('学过的知识点退回理解阶段，不再排复习，保留上次形式以便换一种讲法', () => {
     const state = relearn(learned());
-    expect(state).toEqual({ stage: 'understand', card: null, lastExplainForm: forms.explainForm, lastQuestionForm: forms.questionForm });
+    expect(state).toEqual({ ...UNLEARNED, stage: 'understand', card: null, lastExplainForm: forms.explainForm, lastQuestionForm: forms.questionForm });
     expect(isDue(state, new Date(now.getTime() + 365 * DAY))).toBe(false);
   });
 
