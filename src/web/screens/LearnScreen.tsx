@@ -1,0 +1,500 @@
+import { useEffect, useRef, useState } from 'react';
+import { type FinishResult, type Session, type SessionItem, api } from '../api';
+import { AnswerArea, type Draft, QuestionStem, canSubmit, initialDraft } from '../components/Questions';
+import { ERROR_LABEL, OPTION_LETTERS, PURPOSE_LABEL } from '../labels';
+import { RichMarkdown } from '../RichMarkdown';
+import { navigate, routeHash } from '../router';
+
+/** 作答结果；联结练习另带 AI 对两者关系的一句话概括 */
+type Result = NonNullable<SessionItem['attempt']> & { relation?: string | null };
+
+/**
+ * 学习中的一节：一次只展示一项，答完再进入下一项。
+ * 页面刷新后没有内存里的一节时，向服务端恢复未完成的那一节；没有就回到今天。
+ */
+export function LearnScreen({ initial, onDone }: { initial: { session: Session; notice?: string } | null; onDone: () => void }) {
+  const [state, setState] = useState(initial);
+  const [error, setError] = useState('');
+  const [finished, setFinished] = useState<{ result: FinishResult; session: Session; results: Record<string, Result> } | null>(null);
+
+  useEffect(() => {
+    if (state) return;
+    api.preview().then(
+      async (preview) => {
+        if (!preview.open) return navigate({ name: 'today' });
+        const resumed = await api.nextSession();
+        if (resumed.session) setState({ session: resumed.session });
+      },
+      (e: Error) => setError(e.message),
+    );
+  }, [state]);
+
+  if (finished) return <FinishView {...finished} onLeave={onDone} />;
+  if (error) return <p className="error-text">{error}</p>;
+  if (!state) return <p className="muted">正在打开这一节…</p>;
+  return <SessionFlow session={state.session} notice={state.notice} onFinished={(result, results) => setFinished({ result, session: state.session, results })} />;
+}
+
+function SessionFlow(props: { session: Session; notice?: string; onFinished: (result: FinishResult, results: Record<string, Result>) => void }) {
+  const { session, notice, onFinished } = props;
+  const [results, setResults] = useState<Record<string, Result>>(() =>
+    Object.fromEntries(session.items.filter((i) => i.attempt).map((i) => [i.id, i.attempt!])),
+  );
+  const firstOpen = session.items.findIndex((i) => !i.attempt || i.attempt.needsRating);
+  const [index, setIndex] = useState(firstOpen === -1 ? session.items.length - 1 : firstOpen);
+  const [finishing, setFinishing] = useState(false);
+  const item = session.items[index]!;
+  const isLast = index === session.items.length - 1;
+
+  async function finish() {
+    setFinishing(true);
+    try {
+      onFinished(await api.finish(session.id), results);
+    } finally {
+      setFinishing(false);
+    }
+  }
+
+  async function next() {
+    if (!isLast) return setIndex(index + 1);
+    await finish();
+  }
+
+  async function finishEarly() {
+    if (!window.confirm('提前结束这一节？没做的项不计入，下一节会重新安排。')) return;
+    await finish();
+  }
+
+  return (
+    <div className="grid top">
+      <div className="span-8">
+        <div className="progress-steps" aria-hidden="true">
+          {session.items.map((it, i) => (
+            <span key={it.id} className={i === index ? 'current' : results[it.id] && !results[it.id]!.needsRating ? 'done' : ''} />
+          ))}
+        </div>
+        {notice && index === Math.max(0, firstOpen) && <p className="notice ok" style={{ marginBottom: 16 }}>{notice}</p>}
+        <ItemView
+          key={item.id}
+          sessionId={session.id}
+          item={item}
+          position={`第 ${index + 1} / ${session.items.length} 项`}
+          result={results[item.id] ?? null}
+          onResult={(r) => setResults((prev) => ({ ...prev, [item.id]: r }))}
+          onNext={next}
+          isLast={isLast}
+          busy={finishing}
+        />
+      </div>
+      <aside className="span-4 rail">
+        <section className="panel" aria-labelledby="session-list-title">
+          <header>
+            <h2 id="session-list-title">这一节</h2>
+            <span className="meta num">{session.items.length} 项 · 约 {Math.max(1, Math.round(session.items.reduce((s, i) => s + i.estSeconds, 0) / 60))} 分钟</span>
+          </header>
+          <ol className="rail-list">
+            {session.items.map((it, i) => {
+              const done = results[it.id] && !results[it.id]!.needsRating;
+              return (
+                <li key={it.id} className={`rail-item ${i === index ? 'current' : ''} ${done ? 'done' : ''}`}>
+                  <span className="dot" />
+                  <span className="ri-title">{it.title}</span>
+                  <span className="small">{PURPOSE_LABEL[it.purpose]}</span>
+                </li>
+              );
+            })}
+          </ol>
+          {session.guidance && (
+            <p className="muted small" style={{ marginTop: 12 }}>
+              补充说明：{session.guidance}
+            </p>
+          )}
+          <div className="actions-row">
+            <button type="button" className="btn small ghost" onClick={finishEarly} disabled={finishing}>
+              提前结束这一节
+            </button>
+          </div>
+        </section>
+      </aside>
+    </div>
+  );
+}
+
+function ItemView(props: {
+  sessionId: string;
+  item: SessionItem;
+  position: string;
+  result: Result | null;
+  onResult: (result: Result) => void;
+  onNext: () => void;
+  isLast: boolean;
+  busy: boolean;
+}) {
+  const { sessionId, item, position, result, onResult, onNext, isLast, busy } = props;
+  const shownAt = useRef(Date.now());
+  const [draft, setDraft] = useState<Draft>(() => initialDraft(item.question));
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState('');
+  // 分步揭示、预测揭晓：看完讲解才出题
+  const [ready, setReady] = useState(!item.steps && !item.predict);
+
+  async function submit() {
+    setSubmitting(true);
+    setError('');
+    try {
+      const answer = item.question && (item.question.type === 'mcq' || item.question.type === 'pick_line') ? { choice: draft.choice! } : { text: draft.text };
+      const r = await api.submitAttempt({ sessionId, itemId: item.id, answer, durationMs: Date.now() - shownAt.current });
+      onResult({
+        attemptId: r.attemptId,
+        correct: r.correct,
+        errorType: r.errorType,
+        feedback: r.feedback,
+        needsRating: r.needsRating,
+        reveal: 'relation' in r.reveal ? null : r.reveal,
+        appeal: null,
+        voided: false,
+        relation: 'relation' in r.reveal ? r.reveal.relation : null,
+      });
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  const question = item.question;
+  const answerIndex = result?.reveal && 'answerIndex' in result.reveal ? (result.reveal.answerIndex ?? null) : null;
+  const submittable = item.kind === 'connection' ? draft.text.trim().length > 0 : question ? canSubmit(question, draft) : false;
+
+  return (
+    <article>
+      <div className="item-head">
+        <span>{position}</span>
+        <span className={`pill ${item.purpose === 'new' ? 'accent' : ''}`}>{PURPOSE_LABEL[item.purpose]}</span>
+        <span>{item.topicTitle}</span>
+        {item.kind !== 'connection' && <span>· {item.formLabel}</span>}
+        <h1>{item.kind === 'connection' ? `把「${item.title}」和已经会的联系起来` : item.title}</h1>
+      </div>
+
+      {item.explanation && (
+        <div className="lesson-block">
+          {item.predict ? (
+            <Predict predict={item.predict} explanation={item.explanation} onDone={() => setReady(true)} />
+          ) : (
+            <div className="reading">
+              <RichMarkdown>{item.explanation}</RichMarkdown>
+            </div>
+          )}
+          {item.steps && <Steps steps={item.steps} onDone={() => setReady(true)} />}
+        </div>
+      )}
+
+      {ready && item.connection && (
+        <div className="question">
+          <div className="question-stem reading">
+            <p>{item.connection.prompt}</p>
+          </div>
+          <textarea
+            className="textarea"
+            rows={4}
+            value={draft.text}
+            disabled={!!result}
+            placeholder="用你自己的话写，一两句话就够"
+            aria-label="联结练习的作答"
+            onChange={(e) => setDraft({ ...draft, text: e.target.value })}
+          />
+        </div>
+      )}
+
+      {ready && question && (
+        <div className="question">
+          <QuestionStem question={question} />
+          <AnswerArea question={question} draft={draft} onChange={setDraft} marks={result ? { answerIndex, chosen: draft.choice } : null} disabled={!!result || submitting} />
+        </div>
+      )}
+
+      {ready && !result && (
+        <div className="actions-row">
+          <button type="button" className="btn primary" onClick={submit} disabled={!submittable || submitting}>
+            {submitting ? (question?.type === 'mcq' || question?.type === 'pick_line' ? '提交中…' : 'AI 批改中…') : '提交'}
+          </button>
+          {error && <span className="error-text">{error}</span>}
+        </div>
+      )}
+
+      {result && (
+        <ResultView item={item} result={result} onResult={onResult} onNext={onNext} isLast={isLast} busy={busy} />
+      )}
+    </article>
+  );
+}
+
+/** 预测揭晓：先预测，再揭晓答案和讲解；预测不计分 */
+function Predict({ predict, explanation, onDone }: { predict: NonNullable<SessionItem['predict']>; explanation: string; onDone: () => void }) {
+  const [choice, setChoice] = useState<number | null>(null);
+  return (
+    <div className="reading">
+      <p className="muted small" style={{ margin: '0 0 8px' }}>
+        先预测一下，再看揭晓（不计分）
+      </p>
+      <RichMarkdown>{predict.scenario}</RichMarkdown>
+      <div className="options" style={{ margin: '12px 0' }}>
+        {predict.options.map((option, i) => (
+          <button
+            key={i}
+            type="button"
+            className={`option ${choice === null ? '' : i === predict.answerIndex ? 'correct' : i === choice ? 'wrong' : ''}`}
+            aria-pressed={choice === i}
+            disabled={choice !== null}
+            onClick={() => {
+              setChoice(i);
+              onDone();
+            }}
+          >
+            <span className="letter">{OPTION_LETTERS[i]}</span>
+            <span className="option-text">
+              <RichMarkdown>{option}</RichMarkdown>
+            </span>
+          </button>
+        ))}
+      </div>
+      {choice !== null && (
+        <>
+          <p>
+            <strong>{choice === predict.answerIndex ? '预测对了。' : `答案是 ${OPTION_LETTERS[predict.answerIndex]}。`}</strong> {predict.reveal}
+          </p>
+          <RichMarkdown>{explanation}</RichMarkdown>
+        </>
+      )}
+    </div>
+  );
+}
+
+/** 分步揭示：一步一步点开，看完最后一步才出题 */
+function Steps({ steps, onDone }: { steps: string[]; onDone: () => void }) {
+  const [shown, setShown] = useState(1);
+  const all = shown >= steps.length;
+  useEffect(() => {
+    if (all) onDone();
+  }, [all, onDone]);
+  return (
+    <div className="reading">
+      {steps.slice(0, shown).map((step, i) => (
+        <div className="step" key={i}>
+          <div className="step-count">
+            第 {i + 1} 步 / 共 {steps.length} 步
+          </div>
+          <RichMarkdown>{step}</RichMarkdown>
+        </div>
+      ))}
+      {!all && (
+        <div className="actions-row">
+          <button type="button" className="btn" onClick={() => setShown(shown + 1)}>
+            下一步（{shown + 1} / {steps.length}）
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** 批改结果：判定、反馈、参考答案；答对后自评；判错可申诉 */
+function ResultView(props: { item: SessionItem; result: Result; onResult: (r: Result) => void; onNext: () => void; isLast: boolean; busy: boolean }) {
+  const { item, result, onResult, onNext, isLast, busy } = props;
+  const [appealing, setAppealing] = useState(false);
+  const [reason, setReason] = useState('');
+  const [sending, setSending] = useState(false);
+  const [error, setError] = useState('');
+  const relation = result.relation;
+
+  async function rate(selfRating: 'hard' | 'good' | 'easy') {
+    await api.rate(result.attemptId, selfRating);
+    onResult({ ...result, needsRating: false });
+    onNext();
+  }
+
+  async function appeal() {
+    setSending(true);
+    setError('');
+    try {
+      const r = await api.appeal(result.attemptId, reason);
+      onResult({
+        ...result,
+        correct: r.outcome === 'accepted' ? true : result.correct,
+        needsRating: r.needsRating,
+        voided: r.outcome === 'void',
+        appeal: { reason, outcome: r.outcome, feedback: r.feedback, at: new Date().toISOString() },
+      });
+      setAppealing(false);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setSending(false);
+    }
+  }
+
+  const isConnection = item.kind === 'connection';
+  const verdict = isConnection
+    ? result.correct
+      ? '这条联结成立，已记入认知地图'
+      : '这条联结还不成立，没有记入认知地图'
+    : result.voided
+      ? '这道题已作废，不计入记忆'
+      : result.correct
+        ? '答对了'
+        : `答错了 · ${result.errorType ? ERROR_LABEL[result.errorType] : ''}`;
+
+  return (
+    <div className="result" role="status">
+      <div className={`result-verdict ${result.correct ? 'ok' : result.voided ? '' : 'bad'}`}>{verdict}</div>
+      {result.feedback && (
+        <div className="reading" style={{ fontSize: 15 }}>
+          <RichMarkdown>{result.feedback}</RichMarkdown>
+        </div>
+      )}
+      {relation && <p className="muted" style={{ marginTop: 8 }}>两者的关系：{relation}</p>}
+      {result.reveal && 'referenceAnswer' in result.reveal && result.reveal.referenceAnswer && (
+        <details open={!result.correct}>
+          <summary>参考答案（只作对照，不是唯一标准）</summary>
+          <pre className="code-block" style={{ whiteSpace: 'pre-wrap', marginTop: 8 }}>
+            {result.reveal.referenceAnswer}
+          </pre>
+        </details>
+      )}
+      {result.appeal && (
+        <p style={{ marginTop: 10 }}>
+          <span className="pill">{{ accepted: '申诉成立', void: '题目作废', rejected: '维持原判' }[result.appeal.outcome]}</span>{' '}
+          <span className="muted">{result.appeal.feedback}</span>
+        </p>
+      )}
+
+      {!isConnection && !result.correct && !result.voided && !result.appeal && !appealing && (
+        <button type="button" className="btn small ghost" style={{ marginTop: 10, paddingLeft: 0 }} onClick={() => setAppealing(true)}>
+          我觉得判错了，申诉
+        </button>
+      )}
+      {appealing && (
+        <div className="stack" style={{ marginTop: 12 }}>
+          <label className="field">
+            <span className="label">为什么你的答案也对，或者题目哪里有问题？</span>
+            <textarea className="textarea" rows={3} value={reason} onChange={(e) => setReason(e.target.value)} maxLength={1000} />
+          </label>
+          <div className="actions-row" style={{ marginTop: 0 }}>
+            <button type="button" className="btn" onClick={appeal} disabled={!reason.trim() || sending}>
+              {sending ? 'AI 重新判定中…' : '提交申诉'}
+            </button>
+            <button type="button" className="btn ghost" onClick={() => setAppealing(false)} disabled={sending}>
+              取消
+            </button>
+            {error && <span className="error-text">{error}</span>}
+          </div>
+        </div>
+      )}
+
+      {result.needsRating ? (
+        <div className="rating">
+          <span>这次回答起来感觉：</span>
+          <button type="button" className="btn" onClick={() => rate('hard')}>
+            困难
+          </button>
+          <button type="button" className="btn" onClick={() => rate('good')}>
+            良好
+          </button>
+          <button type="button" className="btn" onClick={() => rate('easy')}>
+            轻松
+          </button>
+        </div>
+      ) : (
+        !appealing && (
+          <div className="actions-row">
+            <button type="button" className="btn primary" onClick={onNext} disabled={busy}>
+              {isLast ? '完成这一节' : '下一项'}
+            </button>
+          </div>
+        )
+      )}
+    </div>
+  );
+}
+
+/** 这一节完成：小结，以及到期时的主题回访 */
+function FinishView(props: { result: FinishResult; session: Session; results: Record<string, Result>; onLeave: () => void }) {
+  const { result, session, results, onLeave } = props;
+  const graded = session.items.filter((i) => i.kind !== 'connection' && results[i.id] && !results[i.id]!.voided);
+  const correct = graded.filter((i) => results[i.id]!.correct).length;
+  const links = session.items.filter((i) => i.kind === 'connection' && results[i.id]?.correct).length;
+  const [revisitDone, setRevisitDone] = useState(false);
+  const [picked, setPicked] = useState<string[]>([]);
+
+  async function answerRevisit(ids: string[]) {
+    await api.answerRevisit(ids);
+    setRevisitDone(true);
+  }
+
+  return (
+    <div className="grid top">
+      <section className="span-8">
+        <h1 className="greeting" style={{ fontSize: 36 }}>
+          这一节学完了。
+        </h1>
+        <p className="greeting-sub">
+          答对 {correct} / {graded.length} 项{links > 0 ? `，新建了 ${links} 条联结` : ''}。下一节正在后台准备，到时打开即可。
+        </p>
+        <div className="rows" style={{ marginTop: 24 }}>
+          {session.items.map((item) => {
+            const r = results[item.id];
+            const text = !r ? '没做' : r.voided ? '作废' : item.kind === 'connection' ? (r.correct ? '联结成立' : '联结不成立') : r.correct ? '答对' : '答错';
+            return (
+              <a key={item.id} className="row-card" href={routeHash({ name: 'map', pointId: item.knowledgePointId })}>
+                <span className="pill">{PURPOSE_LABEL[item.purpose]}</span>
+                <span className="row-main">
+                  <span className="row-title">{item.title}</span>
+                  <span className="row-sub">{item.formLabel}</span>
+                </span>
+                <span className={`pill ${!r ? '' : r.correct ? 'pos' : r.voided ? '' : 'neg'}`}>{text}</span>
+              </a>
+            );
+          })}
+        </div>
+        <div className="actions-row" style={{ marginTop: 24 }}>
+          <a
+            className="btn primary"
+            href={routeHash({ name: 'today' })}
+            onClick={() => {
+              onLeave();
+            }}
+          >
+            回到今天
+          </a>
+          <a className="btn" href={routeHash({ name: 'map' })} onClick={onLeave}>
+            看认知地图
+          </a>
+        </div>
+      </section>
+      {result.revisit && !revisitDone && (
+        <aside className="span-4 panel" aria-labelledby="revisit-title">
+          <header>
+            <h2 id="revisit-title">暂停的主题，想恢复哪些？</h2>
+          </header>
+          <p className="muted" style={{ marginBottom: 8 }}>
+            选中的主题恢复新学；不选也没关系，过两周再问你。
+          </p>
+          {result.revisit.topics.map((t) => (
+            <label key={t.id} className="check">
+              <input type="checkbox" checked={picked.includes(t.id)} onChange={(e) => setPicked(e.target.checked ? [...picked, t.id] : picked.filter((id) => id !== t.id))} />
+              <span>{t.title}</span>
+            </label>
+          ))}
+          <div className="actions-row">
+            <button type="button" className="btn" disabled={picked.length === 0} onClick={() => answerRevisit(picked)}>
+              恢复选中的主题
+            </button>
+            <button type="button" className="btn ghost" onClick={() => answerRevisit([])}>
+              暂时都不
+            </button>
+          </div>
+        </aside>
+      )}
+    </div>
+  );
+}

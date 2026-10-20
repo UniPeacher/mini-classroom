@@ -19,3 +19,4 @@ data/
 
 # 运行时文件（进程号、端口、日志）
 .run/
+.taste-skill/

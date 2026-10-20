@@ -1,0 +1,302 @@
+import { useState } from 'react';
+import { type CognitiveMap, type MapPoint, type MapTopic, api } from '../api';
+import { Icon } from '../components/Icon';
+import { RecordView } from '../components/RecordView';
+import { StageLadder, StageLegend } from '../components/StageLadder';
+import { useResource } from '../hooks';
+import { STAGE_LABEL, relativeDue } from '../labels';
+import { navigate, routeHash } from '../router';
+
+/** 认知地图要回答：我掌握到哪了？下一步能学什么？ */
+export function MapScreen({ pointId }: { pointId?: string }) {
+  const map = useResource(() => api.map(), []);
+  const data = map.data;
+  const learned = data?.topics.reduce((n, t) => n + t.learned, 0) ?? 0;
+  const total = data?.topics.reduce((n, t) => n + t.total, 0) ?? 0;
+  const edge = data?.topics.reduce((n, t) => n + t.edge, 0) ?? 0;
+
+  return (
+    <>
+      <div className="title-row">
+        <div>
+          <h1>认知地图</h1>
+          <p className="sub">
+            {data ? `已学会 ${learned} / ${total} 个知识点 · 下一步可学 ${edge} 个 · ${data.connections.length} 条亲手建立的联结` : '正在读取…'}
+          </p>
+        </div>
+        <StageLegend withMap />
+      </div>
+      {map.error && <p className="error-text">没能读取认知地图：{map.error}</p>}
+      {data && data.topics.length === 0 && <div className="empty">还没有学习主题。回到"今天"添加一个想学的主题。</div>}
+      {data && data.topics.length > 0 && (
+        <div className="grid top">
+          {pointId && (
+            <aside className="span-4 rail" style={{ gridColumn: '9 / -1', gridRow: 1 }}>
+              <PointPanel key={pointId} pointId={pointId} map={data} onChanged={map.reload} />
+            </aside>
+          )}
+          <div className="span-8 stack" style={{ gridColumn: '1 / 9', gridRow: 1 }}>
+            {data.topics.map((topic) => (
+              <TopicSection key={topic.id} topic={topic} map={data} selected={pointId} />
+            ))}
+          </div>
+          {!pointId && (
+            <aside className="span-4 rail stack" style={{ gridColumn: '9 / -1', gridRow: 1 }}>
+              <Connections map={data} />
+              <ExistingKnowledge map={data} onChanged={map.reload} />
+            </aside>
+          )}
+        </div>
+      )}
+    </>
+  );
+}
+
+/** 一个主题在地图上的部分：知识点卡片按推荐顺序排列，组块合并显示 */
+export function TopicSection(props: { topic: MapTopic; map: CognitiveMap; selected?: string; showTitle?: boolean }) {
+  const { topic, map, selected, showTitle = true } = props;
+  const points = map.points.filter((p) => p.topicId === topic.id);
+  const chunks = map.chunks.filter((c) => points.some((p) => p.id === c.wholeId));
+  const inChunk = new Set(chunks.flatMap((c) => [c.wholeId, ...c.partIds]));
+  const byId = new Map(map.points.map((p) => [p.id, p]));
+
+  return (
+    <section className="panel" aria-labelledby={`topic-${topic.id}`}>
+      <div className="topic-head">
+        {showTitle ? (
+          <h2 id={`topic-${topic.id}`} style={{ fontSize: 15 }}>
+            <a href={routeHash({ name: 'topic', topicId: topic.id })}>{topic.title}</a>
+            {topic.status === 'paused' && <span className="pill">已暂停</span>}
+          </h2>
+        ) : (
+          <h2 id={`topic-${topic.id}`}>知识点</h2>
+        )}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+            <StageLadder stages={points.map((p) => p.stage)} label={topic.title} />
+            <span className="muted small num">
+              {topic.learned} / {topic.total}
+            </span>
+          </div>
+      </div>
+      {topic.graphStatus !== 'ready' ? (
+        <div className="empty">{topic.graphStatus === 'pending' ? '知识图谱正在生成…' : '知识图谱生成失败，可以删掉重建这个主题。'}</div>
+      ) : (
+        <div className="map-grid">
+          {chunks.map((chunk) => {
+            const whole = byId.get(chunk.wholeId)!;
+            return (
+              <button
+                key={chunk.wholeId}
+                type="button"
+                className="point chunk st-retain"
+                aria-current={selected === whole.id}
+                onClick={() => navigate({ name: 'map', pointId: whole.id })}
+              >
+                <span className="p-title">{whole.title}</span>
+                <span className="parts">{chunk.partIds.map((id) => byId.get(id)?.title).join(' · ')}</span>
+                <span className="p-meta">组块 · 全部进入保持阶段</span>
+              </button>
+            );
+          })}
+          {points
+            .filter((p) => !inChunk.has(p.id))
+            .map((point) => (
+              <PointCard key={point.id} point={point} selected={selected === point.id} />
+            ))}
+        </div>
+      )}
+    </section>
+  );
+}
+
+function PointCard({ point, selected }: { point: MapPoint; selected: boolean }) {
+  const className = point.onEdge ? 'edge' : point.fog ? 'fog' : `st-${point.stage}`;
+  const meta = point.onEdge ? '下一步可学' : point.fog ? '前置还没学会' : point.nextReviewAt ? `${point.stageLabel} · ${relativeDue(point.nextReviewAt)}复习` : point.stageLabel;
+  return (
+    <button type="button" className={`point ${className}`} aria-current={selected} onClick={() => navigate({ name: 'map', pointId: point.id })}>
+      <span className="p-title">{point.title}</span>
+      <span className="p-meta">
+        {point.decomposed ? '拆解出的前置 · ' : ''}
+        {meta}
+      </span>
+    </button>
+  );
+}
+
+/** 知识点详情：掌握阶段、下次复习、联结、全部作答留档，可重新学习 */
+function PointPanel({ pointId, map, onChanged }: { pointId: string; map: CognitiveMap; onChanged: () => void }) {
+  const detail = useResource(() => api.point(pointId), [pointId]);
+  const [message, setMessage] = useState('');
+  const [error, setError] = useState('');
+  const point = map.points.find((p) => p.id === pointId);
+  const byId = new Map(map.points.map((p) => [p.id, p]));
+  const links = map.connections.filter((c) => c.fromPointId === pointId || c.toPointId === pointId);
+  const lastLesson = detail.data ? detail.data.records.map((r) => r.kind).lastIndexOf('lesson') : -1;
+
+  async function relearn() {
+    if (!window.confirm('重新学习会把这个知识点退回"理解"阶段：下一节微课堂换一种讲法重讲，答对后复习安排从头开始。确定吗？')) return;
+    setError('');
+    try {
+      await api.relearn([pointId]);
+      setMessage('已安排：下一节微课堂会重讲它。');
+      onChanged();
+      void detail.reload();
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  }
+
+  return (
+    <section className="panel white" aria-labelledby="point-title">
+      <a className="back-link" href={routeHash({ name: 'map' })}>
+        <Icon name="back" />
+        收起
+      </a>
+      <h2 id="point-title" style={{ fontSize: 18, lineHeight: '26px' }}>
+        {point?.title ?? detail.data?.title}
+      </h2>
+      {detail.data && (
+        <>
+          <p className="muted small" style={{ marginTop: 4 }}>
+            {detail.data.topicTitle}
+          </p>
+          <div className="actions-row" style={{ marginTop: 12 }}>
+            <span className={`pill ${detail.data.stage === 'unlearned' ? '' : 'accent'}`}>{STAGE_LABEL[detail.data.stage]}</span>
+            {detail.data.nextReviewAt && <span className="muted small">下次复习：{relativeDue(detail.data.nextReviewAt)}</span>}
+          </div>
+          <p style={{ marginTop: 12 }}>{detail.data.summary}</p>
+          {point?.prerequisiteIds.length ? (
+            <p className="muted small" style={{ marginTop: 8 }}>
+              前置：{point.prerequisiteIds.map((id) => byId.get(id)?.title).join('、')}
+            </p>
+          ) : null}
+          {detail.data.canRelearn && (
+            <div className="actions-row">
+              <button type="button" className="btn small" onClick={relearn}>
+                重新学习
+              </button>
+            </div>
+          )}
+          {message && <p className="notice ok" style={{ marginTop: 12 }}>{message}</p>}
+          {error && <p className="error-text" style={{ marginTop: 12 }}>{error}</p>}
+
+          {links.length > 0 && (
+            <div style={{ marginTop: 20 }}>
+              <h3 className="small muted" style={{ marginBottom: 8 }}>
+                联结
+              </h3>
+              <div className="rows">
+                {links.map((c) => (
+                  <div key={c.id} className="row-card" style={{ flexDirection: 'column', alignItems: 'stretch' }}>
+                    <span className="row-title">
+                      {byId.get(c.fromPointId)?.title} ↔ {c.toPointId ? byId.get(c.toPointId)?.title : c.toExisting?.text}
+                    </span>
+                    <span className="reading" style={{ fontSize: 14 }}>
+                      <blockquote style={{ margin: '6px 0 0' }}>{c.quote}</blockquote>
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          <div style={{ marginTop: 24 }}>
+            <h3 className="small muted" style={{ marginBottom: 4 }}>
+              作答留档 · {detail.data.records.length} 次
+            </h3>
+            {detail.data.records.length === 0 && (
+              <p className="muted">还没学过。{point?.onEdge ? '下一节微课堂会排入它。' : '先学会它的前置知识点，才会排入微课堂。'}</p>
+            )}
+            {detail.data.records.map((record, i) => (
+              <RecordView key={record.attemptId} record={record} label={`第 ${i + 1} 次`} explanationOpen={i === lastLesson} />
+            ))}
+          </div>
+        </>
+      )}
+      {detail.error && <p className="error-text">{detail.error}</p>}
+    </section>
+  );
+}
+
+function Connections({ map }: { map: CognitiveMap }) {
+  const byId = new Map(map.points.map((p) => [p.id, p]));
+  const shown = map.connections.slice(0, 5);
+  return (
+    <section className="panel" aria-labelledby="links-title">
+      <header>
+        <h2 id="links-title">
+          联结 <span className="chip">{map.connections.length}</span>
+        </h2>
+      </header>
+      {shown.length === 0 && <p className="muted">每学一个新知识点，会请你用自己的话把它和已经会的联系起来，成立的联结记在这里。</p>}
+      <div className="rows">
+        {shown.map((c) => (
+          <a key={c.id} className="row-card" href={routeHash({ name: 'map', pointId: c.fromPointId })} style={{ flexDirection: 'column', alignItems: 'stretch' }}>
+            <span className="row-title">
+              {byId.get(c.fromPointId)?.title} ↔ {c.toPointId ? byId.get(c.toPointId)?.title : c.toExisting?.text}
+            </span>
+            <span className="row-sub" style={{ whiteSpace: 'normal' }}>
+              「{c.quote}」
+            </span>
+          </a>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+/** 已有知识：学习之前就会的东西，新知识可以挂靠在上面 */
+export function ExistingKnowledge({ map, onChanged }: { map: CognitiveMap; onChanged: () => void }) {
+  const [text, setText] = useState('');
+  const [error, setError] = useState('');
+
+  async function add(event: React.FormEvent) {
+    event.preventDefault();
+    setError('');
+    try {
+      await api.addExistingKnowledge(text);
+      setText('');
+      onChanged();
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  }
+
+  async function remove(id: string) {
+    setError('');
+    try {
+      await api.removeExistingKnowledge(id);
+      onChanged();
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  }
+
+  return (
+    <section className="panel" aria-labelledby="known-title">
+      <header>
+        <h2 id="known-title">
+          已有知识 <span className="chip">{map.existingKnowledge.length}</span>
+        </h2>
+      </header>
+      {map.existingKnowledge.length === 0 && <p className="muted" style={{ marginBottom: 12 }}>摸底时从你的背景自述里提炼，也可以自己添加。</p>}
+      <div className="rows">
+        {map.existingKnowledge.map((k) => (
+          <div key={k.id} className="row-card" style={{ minHeight: 48 }}>
+            <span className="row-main">{k.text}</span>
+            <button type="button" className="btn small ghost" onClick={() => remove(k.id)} aria-label={`删除已有知识：${k.text}`}>
+              删除
+            </button>
+          </div>
+        ))}
+      </div>
+      <form className="actions-row" onSubmit={add}>
+        <input className="input" style={{ flex: '1 1 140px' }} value={text} maxLength={100} onChange={(e) => setText(e.target.value)} placeholder="例如：会用 Excel 做透视表" aria-label="新的已有知识" />
+        <button type="submit" className="btn" disabled={!text.trim()}>
+          添加
+        </button>
+      </form>
+      {error && <p className="error-text" style={{ marginTop: 8 }}>{error}</p>}
+    </section>
+  );
+}

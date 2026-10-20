@@ -1,5 +1,5 @@
 import { describe, expectTypeOf, it } from 'vitest';
-import type { Jsonify, Session, Topic } from '../../src/web/api';
+import type { Jsonify, SessionItem, Topic } from '../../src/web/api';
 
 // 类型断言由 pnpm typecheck 检查；运行时这里没有实际逻辑
 describe('前端接口类型', () => {
@@ -13,6 +13,6 @@ describe('前端接口类型', () => {
       list: string[];
       maybe: string | null;
     }>();
-    expectTypeOf<Session['items'][number]['question']['type']>().toEqualTypeOf<'mcq' | 'short_answer'>();
+    expectTypeOf<NonNullable<SessionItem['question']>['type']>().toEqualTypeOf<'mcq' | 'short_answer' | 'pick_line' | 'complete' | 'fix'>();
   });
 });

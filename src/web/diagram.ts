@@ -24,14 +24,14 @@ let renderCount = 0;
 /** 按需加载 Mermaid 并渲染为 SVG 字符串；语法错误时抛出。 */
 export async function renderMermaid(code: string): Promise<string> {
   mermaidReady ??= import('mermaid').then(({ default: mermaid }) => {
-    const dark = window.matchMedia?.('(prefers-color-scheme: dark)').matches ?? false;
     // strict：不允许图中出现可执行内容，标签会经过清洗
     // 按原始尺寸输出，不随容器缩小：宽图横向滚动，文字保持可读
     const natural = { useMaxWidth: false };
     mermaid.initialize({
       startOnLoad: false,
       securityLevel: 'strict',
-      theme: dark ? 'dark' : 'default',
+      // 界面只有浅色主题，图用中性配色，和界面的青绿色系协调
+      theme: 'neutral',
       flowchart: natural,
       sequence: natural,
       state: natural,
