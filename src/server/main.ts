@@ -34,7 +34,7 @@ const learning = createLearning({ db, model, settings });
 const app = createApp({ learning, clock, devMode: process.env.DEV_MODE === 'true' });
 
 // 只监听本机（第一版不做登录）；首选端口被占用时自动顺延
-const preferredPort = Number(process.env.PORT ?? 6102);
+const preferredPort = Number(process.env.PORT ?? 6201);
 const { server, port } = await listenWithFallback({ fetch: app.fetch, hostname: '127.0.0.1', port: preferredPort });
 mkdirSync(RUN_DIR, { recursive: true });
 writeFileSync(PORT_FILE, String(port));

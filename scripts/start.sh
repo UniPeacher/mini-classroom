@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # 启动微课堂：先启动服务端，就绪后再启动前端（前端要读取服务端实际端口）。
-# 首选端口：服务端 6102、前端 6101，被占用时自动顺延。日志与端口记录在 .run/ 下。
+# 首选端口：前端 6101、服务端 6201，被占用时自动顺延。日志与端口记录在 .run/ 下。
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 cd "$ROOT"

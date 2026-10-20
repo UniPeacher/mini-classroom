@@ -14,7 +14,7 @@ export interface ListenOptions {
 export async function listenWithFallback(options: ListenOptions): Promise<{ server: ServerType; port: number }> {
   const maxShift = options.maxShift ?? 20;
   for (let port = options.port; port <= options.port + maxShift; port++) {
-    // 其他程序监听在所有地址（如 *:6102）时，系统仍允许再绑定更具体的 127.0.0.1:6102，
+    // 其他程序监听在所有地址（如 *:6201）时，系统仍允许再绑定更具体的 127.0.0.1:6201，
     // 结果会抢走对方的本机访问。所以先探测：本机这个端口已有程序响应，就视为被占用。
     if (await isAnswering(options.hostname, port)) continue;
     try {

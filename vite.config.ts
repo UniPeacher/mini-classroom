@@ -11,7 +11,7 @@ const HOST = '127.0.0.1';
 /** 服务端实际监听的端口：优先读服务端写下的端口文件（端口可能已顺延），否则用 .env 中的首选端口 */
 function serverPort(env: Record<string, string>): string {
   const file = join(RUN_DIR, 'server.port');
-  return existsSync(file) ? readFileSync(file, 'utf8').trim() : (env.PORT ?? '6102');
+  return existsSync(file) ? readFileSync(file, 'utf8').trim() : (env.PORT ?? '6201');
 }
 
 /** 把前端实际监听的端口写入运行时目录，供启停脚本读取 */
