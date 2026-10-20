@@ -19,6 +19,8 @@ const AttemptBody = z.object({
   durationMs: z.number().int().nonnegative().optional(),
 });
 const RelearnBody = z.object({ knowledgePointIds: z.array(z.string()).min(1, '请选择要重新学习的知识点') });
+const ReviewQuery = z.object({ timeZone: z.string().min(1), topicId: z.string().optional() });
+const DayParam = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, '日期格式应为 YYYY-MM-DD');
 const RatingBody = z.object({ selfRating: z.enum(['hard', 'good', 'easy']) });
 
 /** 组装 HTTP 应用；依赖由调用方注入，便于测试。 */
@@ -55,6 +57,12 @@ export function createApp({ learning, clock, devMode, frontendUrl }: AppDeps) {
   });
 
   app.get('/api/topics/:id/map', (c) => c.json(learning.topicMap(c.req.param('id'))));
+
+  app.get('/api/review-days', (c) => c.json({ days: learning.reviewDays(ReviewQuery.parse(c.req.query())) }));
+
+  app.get('/api/review-days/:day', (c) =>
+    c.json(learning.dayReview({ day: DayParam.parse(c.req.param('day')), ...ReviewQuery.parse(c.req.query()) })),
+  );
 
   app.post('/api/relearn', async (c) => {
     const { knowledgePointIds } = RelearnBody.parse(await c.req.json());

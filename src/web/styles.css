@@ -116,6 +116,12 @@ textarea {
   gap: 8px;
 }
 
+/* 输入框占满一行时，按钮不被挤压换行 */
+.row button {
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
 .muted {
   color: var(--muted);
 }
@@ -392,21 +398,16 @@ blockquote {
   background: var(--ok-bg);
 }
 
-/* 按天回看 */
-.day-review {
-  padding: 12px;
-  margin-bottom: 12px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-}
-
-.day-review .row {
+/* 按天回看：选日期 */
+.day-picker {
   align-items: center;
   flex-wrap: wrap;
+  margin-bottom: 12px;
 }
 
-.day-review p {
-  margin: 8px 0 0;
+.center .day-picker {
+  justify-content: center;
+  margin: 16px 0 0;
 }
 
 .day-review-end {

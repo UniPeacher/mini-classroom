@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { and, asc, eq, inArray, isNull } from 'drizzle-orm';
+import { type SQL, and, asc, eq, gte, inArray, isNull, lt } from 'drizzle-orm';
 import type { StructuredModel } from '../ai/gateway';
 import { gradeShortAnswer } from '../ai/generators';
 import { assemble } from '../domain/assemble';
@@ -145,14 +145,7 @@ export function createLearning({ db, model, settings }: LearningDeps) {
     const edgeIds = new Set(cognitiveEdge(allPoints, states).map((p) => p.id));
     const points = allPoints.filter((p) => p.topicId === topicId).sort((a, b) => a.position - b.position);
 
-    const records = db
-      .select({ attempt: attempts, item: items })
-      .from(attempts)
-      .innerJoin(items, eq(attempts.itemId, items.id))
-      .innerJoin(knowledgePoints, eq(items.knowledgePointId, knowledgePoints.id))
-      .where(eq(knowledgePoints.topicId, topicId))
-      .orderBy(asc(attempts.createdAt))
-      .all();
+    const records = loadRecords(eq(knowledgePoints.topicId, topicId));
 
     return {
       topic,
@@ -167,20 +160,59 @@ export function createLearning({ db, model, settings }: LearningDeps) {
           nextReviewAt: state.card?.due ?? null,
           records: records
             .filter((r) => r.item.knowledgePointId === point.id)
-            .map(({ attempt, item }) => ({
-              attemptId: attempt.id,
-              at: attempt.createdAt,
-              kind: item.kind,
-              explanation: item.kind === 'lesson' ? (item.content as LessonContent).explanation : null,
-              question: questionOf(item),
-              answer: attempt.answer as Answer,
-              correct: attempt.correct,
-              errorType: attempt.errorType,
-              feedback: attempt.feedback,
-              selfRating: attempt.selfRating,
-            })),
+            .map(toRecord),
         };
       }),
+    };
+  }
+
+  /**
+   * 按天回看：有学习记录的日子（按用户所在时区划分），最近的在前。
+   * 指定主题时只算这个主题的知识点。
+   */
+  function reviewDays(input: { timeZone: string; topicId?: string }) {
+    if (input.topicId && !getTopic(db, input.topicId)) throw new LearningError('学习主题不存在', 404);
+    const dayOf = dayFormatter(input.timeZone);
+    const rows = db
+      .select({ at: attempts.createdAt, knowledgePointId: items.knowledgePointId })
+      .from(attempts)
+      .innerJoin(items, eq(attempts.itemId, items.id))
+      .innerJoin(knowledgePoints, eq(items.knowledgePointId, knowledgePoints.id))
+      .where(input.topicId ? eq(knowledgePoints.topicId, input.topicId) : undefined)
+      .all();
+    const pointsByDay = new Map<string, Set<string>>();
+    for (const row of rows) {
+      const day = dayOf(row.at);
+      pointsByDay.set(day, (pointsByDay.get(day) ?? new Set()).add(row.knowledgePointId));
+    }
+    return [...pointsByDay]
+      .map(([day, pointIds]) => ({ day, pointCount: pointIds.size }))
+      .sort((a, b) => b.day.localeCompare(a.day));
+  }
+
+  /** 按天回看：那一天的全部作答留档（讲解、题目、回答、批改），按当时的先后顺序 */
+  function dayReview(input: { day: string; timeZone: string; topicId?: string }) {
+    const topic = input.topicId ? getTopic(db, input.topicId) : null;
+    if (input.topicId && !topic) throw new LearningError('学习主题不存在', 404);
+    const dayOf = dayFormatter(input.timeZone);
+    // 先按 UTC 前后各放宽 14 小时（覆盖所有时区）粗筛，再按用户时区精确判断是不是这一天
+    const dayStart = Date.parse(`${input.day}T00:00:00Z`);
+    const range = and(
+      gte(attempts.createdAt, new Date(dayStart - 14 * HOUR_MS)),
+      lt(attempts.createdAt, new Date(dayStart + 38 * HOUR_MS)),
+    );
+    const rows = loadRecords(input.topicId ? and(range, eq(knowledgePoints.topicId, input.topicId)) : range).filter(
+      (row) => dayOf(row.attempt.createdAt) === input.day,
+    );
+    const states = loadStates(db);
+    return {
+      day: input.day,
+      topic: topic ?? null,
+      entries: rows.map((row) => ({
+        topicTitle: row.topicTitle,
+        point: { id: row.point.id, title: row.point.title, stage: (states.get(row.point.id) ?? UNLEARNED).stage },
+        record: toRecord(row),
+      })),
     };
   }
 
@@ -207,6 +239,19 @@ export function createLearning({ db, model, settings }: LearningDeps) {
   }
 
   // ---------- 内部 ----------
+
+  /** 作答留档连同所属的内容、知识点和主题，按作答时间排序 */
+  function loadRecords(filter: SQL | undefined) {
+    return db
+      .select({ attempt: attempts, item: items, point: knowledgePoints, topicTitle: topics.title })
+      .from(attempts)
+      .innerJoin(items, eq(attempts.itemId, items.id))
+      .innerJoin(knowledgePoints, eq(items.knowledgePointId, knowledgePoints.id))
+      .innerJoin(topics, eq(knowledgePoints.topicId, topics.id))
+      .where(filter)
+      .orderBy(asc(attempts.createdAt))
+      .all();
+  }
 
   /** 在未结束的一节里、还没按作答更新记忆状态的知识点 */
   function pendingInOpenSession(knowledgePointIds: string[]): string[] {
@@ -313,7 +358,7 @@ export function createLearning({ db, model, settings }: LearningDeps) {
     };
   }
 
-  return { startTopic, listTopics, topicMap, relearnPoints, nextSession, submitAttempt, rateAttempt, finishSession };
+  return { startTopic, listTopics, topicMap, reviewDays, dayReview, relearnPoints, nextSession, submitAttempt, rateAttempt, finishSession };
 }
 
 export type Learning = ReturnType<typeof createLearning>;
@@ -324,6 +369,35 @@ export type ItemPurpose = 'new' | 'advance' | 'review';
 function purposeOf(item: ItemRow, taughtBefore: Set<string>): ItemPurpose {
   if (item.kind === 'review') return 'review';
   return taughtBefore.has(item.knowledgePointId) ? 'advance' : 'new';
+}
+
+const HOUR_MS = 3600 * 1000;
+
+/** 把时间换算成用户所在时区的日期（YYYY-MM-DD）；时区名不合法时报 400 */
+function dayFormatter(timeZone: string): (date: Date) => string {
+  let format: Intl.DateTimeFormat;
+  try {
+    format = new Intl.DateTimeFormat('sv-SE', { timeZone, year: 'numeric', month: '2-digit', day: '2-digit' });
+  } catch {
+    throw new LearningError(`不认识的时区：${timeZone}`, 400);
+  }
+  return (date) => format.format(date);
+}
+
+/** 一次作答的留档：作答过的题目连同答案一起给出 */
+function toRecord({ attempt, item }: { attempt: typeof attempts.$inferSelect; item: ItemRow }) {
+  return {
+    attemptId: attempt.id,
+    at: attempt.createdAt,
+    kind: item.kind,
+    explanation: item.kind === 'lesson' ? (item.content as LessonContent).explanation : null,
+    question: questionOf(item),
+    answer: attempt.answer as Answer,
+    correct: attempt.correct,
+    errorType: attempt.errorType,
+    feedback: attempt.feedback,
+    selfRating: attempt.selfRating,
+  };
 }
 
 function questionOf(item: ItemRow): Question {

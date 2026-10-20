@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { type Session, type Topic, api, devNow } from './api';
+import { DayPicker, DayReviewPage, parseReviewHash } from './DayReview';
 import { SessionView } from './SessionView';
 import { TopicMapView } from './TopicMapView';
 import './styles.css';
@@ -13,6 +14,20 @@ type View =
 export function App() {
   const [view, setView] = useState<View>({ name: 'home' });
   const [devMode, setDevMode] = useState(false);
+  // 回看页有自己的地址，在新标签页打开，不打断原页面
+  const [review, setReview] = useState(() => parseReviewHash(location.hash));
+
+  useEffect(() => {
+    const onHashChange = () => setReview(parseReviewHash(location.hash));
+    window.addEventListener('hashchange', onHashChange);
+    return () => window.removeEventListener('hashchange', onHashChange);
+  }, []);
+
+  function goHome() {
+    if (review) history.pushState(null, '', location.pathname);
+    setReview(null);
+    setView({ name: 'home' });
+  }
 
   useEffect(() => {
     api.health().then((h) => setDevMode(h.devMode), () => setDevMode(false));
@@ -21,20 +36,21 @@ export function App() {
   return (
     <main className="page">
       <header className="header">
-        <h1 onClick={() => setView({ name: 'home' })}>微课堂</h1>
+        <h1 onClick={goHome}>微课堂</h1>
         {devMode && <DevClock />}
       </header>
-      {view.name === 'home' && (
+      {review && <DayReviewPage route={review} />}
+      {!review && view.name === 'home' && (
         <Home
           onStart={(session) => setView({ name: 'session', session })}
           onOpenTopic={(topicId) => setView({ name: 'topic', topicId })}
         />
       )}
-      {view.name === 'topic' && <TopicMapView topicId={view.topicId} onBack={() => setView({ name: 'home' })} />}
-      {view.name === 'session' && (
+      {!review && view.name === 'topic' && <TopicMapView topicId={view.topicId} onBack={() => setView({ name: 'home' })} />}
+      {!review && view.name === 'session' && (
         <SessionView session={view.session} onFinish={(correct, total) => setView({ name: 'done', correct, total })} />
       )}
-      {view.name === 'done' && (
+      {!review && view.name === 'done' && (
         <section className="card center">
           <h2>本节完成</h2>
           <p>
@@ -87,6 +103,7 @@ function Home({ onStart, onOpenTopic }: { onStart: (session: Session) => void; o
         {preparing && <p className="muted">内容正在后台准备，稍等一会儿再点。</p>}
         {topics.length === 0 && <p className="muted">先在下面输入一个想学的主题。</p>}
         {error && <p className="error">{error}</p>}
+        <DayPicker />
       </section>
       <TopicList topics={topics} onCreated={refresh} onOpen={onOpenTopic} />
     </>
