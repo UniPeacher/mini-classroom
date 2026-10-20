@@ -11,7 +11,7 @@ import { createLearning } from './learning';
 
 if (existsSync('.env')) process.loadEnvFile('.env');
 
-const port = Number(process.env.PORT ?? 8787);
+const port = Number(process.env.PORT ?? 6102);
 const clock = () => new Date();
 const db = openDb(process.env.DB_PATH ?? 'data/weiketang.sqlite');
 const model = modelFromEnv();
