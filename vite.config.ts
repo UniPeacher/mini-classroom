@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node
 import { join } from 'node:path';
 import { type Plugin, defineConfig, loadEnv } from 'vite';
 import react from '@vitejs/plugin-react';
-import { findAvailablePort } from './src/server/listen';
+import { findAvailablePort } from './src/server/listen.ts';
 
 const RUN_DIR = join(process.cwd(), '.run');
 // 与服务端一样只监听 127.0.0.1：localhost 在 macOS 上可能解析为 ::1，会和 127.0.0.1 上的同号端口并存而混淆
@@ -43,7 +43,8 @@ export default defineConfig(async ({ mode, command }) => {
       port: command === 'serve' ? await findAvailablePort({ hostname: HOST, port: 6101 }) : 6101,
       strictPort: true,
       // 开发时把接口请求转发给本地服务端；需在服务端启动后再启动前端（start.sh 已保证顺序）
-      proxy: { '/api': `http://${HOST}:${serverPort(env)}` },
+      // 规则带结尾斜杠：只转发 /api/ 下的接口，避免误伤 /api.ts 这类前端源码文件
+      proxy: { '/api/': `http://${HOST}:${serverPort(env)}` },
     },
     build: { outDir: '../../dist/web', emptyOutDir: true },
   };
