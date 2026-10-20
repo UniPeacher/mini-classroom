@@ -5,6 +5,9 @@ export type Jsonify<T> = T extends Date ? string : T extends object ? { [K in ke
 
 // 接口返回类型直接取自服务端实现，前后端只维护一份
 export type Topic = Jsonify<ReturnType<Learning['listTopics']>[number]>;
+export type TopicMap = Jsonify<ReturnType<Learning['topicMap']>>;
+export type MapPoint = TopicMap['points'][number];
+export type MapRecord = MapPoint['records'][number];
 export type NextSession = Jsonify<ReturnType<Learning['nextSession']>>;
 export type Session = NonNullable<NextSession['session']>;
 export type SessionItem = Session['items'][number];
@@ -46,6 +49,7 @@ export const api = {
   health: () => request<{ ok: boolean; devMode: boolean }>('GET', '/api/health'),
   listTopics: () => request<{ topics: Topic[] }>('GET', '/api/topics'),
   createTopic: (title: string) => request<{ topicId: string }>('POST', '/api/topics', { title }),
+  topicMap: (topicId: string) => request<TopicMap>('GET', `/api/topics/${topicId}/map`),
   nextSession: () => request<NextSession>('POST', '/api/sessions/next'),
   submitAttempt: (body: { sessionId: string; itemId: string; answer: Answer; durationMs: number }) =>
     request<AttemptResult>('POST', '/api/attempts', body),

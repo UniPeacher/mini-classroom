@@ -3,14 +3,15 @@ import { and, asc, eq, inArray, isNull } from 'drizzle-orm';
 import type { StructuredModel } from '../ai/gateway';
 import { gradeShortAnswer } from '../ai/generators';
 import { assemble } from '../domain/assemble';
+import { cognitiveEdge } from '../domain/edge';
 import { gradeMcq } from '../domain/grading';
 import { type Outcome, type SelfRating, UNLEARNED, applyLessonOutcome, applyReviewOutcome } from '../domain/memory';
 import { enqueue } from '../jobs/queue';
 import type { Settings } from '../settings';
 import type { Grade, LessonContent, Question, ReviewContent } from '../shared/content';
 import type { Db } from '../store/db';
-import { createTopic, getItems, loadPoints, loadPool, loadStates, markItemsUsed, saveState } from '../store/repo';
-import { attempts, items, jobs, sessionItems, sessions, topics } from '../store/schema';
+import { createTopic, getItems, getTopic, loadPoints, loadPool, loadStates, markItemsUsed, saveState } from '../store/repo';
+import { attempts, items, jobs, knowledgePoints, sessionItems, sessions, topics } from '../store/schema';
 
 export interface LearningDeps {
   db: Db;
@@ -132,6 +133,57 @@ export function createLearning({ db, model, settings }: LearningDeps) {
     return { ok: true };
   }
 
+  /**
+   * 认知地图中某个主题的部分：每个知识点的掌握阶段、是否在认知边缘，以及学过的内容和作答记录。
+   * 只给已经作答过的内容：还没学的知识点只显示标题和概要，讲解要在微课堂里配合小题学。
+   */
+  function topicMap(topicId: string) {
+    const topic = getTopic(db, topicId);
+    if (!topic) throw new LearningError('学习主题不存在', 404);
+    const allPoints = loadPoints(db);
+    const states = loadStates(db);
+    const edgeIds = new Set(cognitiveEdge(allPoints, states).map((p) => p.id));
+    const points = allPoints.filter((p) => p.topicId === topicId).sort((a, b) => a.position - b.position);
+
+    const records = db
+      .select({ attempt: attempts, item: items })
+      .from(attempts)
+      .innerJoin(items, eq(attempts.itemId, items.id))
+      .innerJoin(knowledgePoints, eq(items.knowledgePointId, knowledgePoints.id))
+      .where(eq(knowledgePoints.topicId, topicId))
+      .orderBy(asc(attempts.createdAt))
+      .all();
+
+    return {
+      topic,
+      points: points.map((point) => {
+        const state = states.get(point.id) ?? UNLEARNED;
+        return {
+          id: point.id,
+          title: point.title,
+          summary: point.summary,
+          stage: state.stage,
+          onEdge: edgeIds.has(point.id),
+          nextReviewAt: state.card?.due ?? null,
+          records: records
+            .filter((r) => r.item.knowledgePointId === point.id)
+            .map(({ attempt, item }) => ({
+              attemptId: attempt.id,
+              at: attempt.createdAt,
+              kind: item.kind,
+              explanation: item.kind === 'lesson' ? (item.content as LessonContent).explanation : null,
+              question: questionOf(item),
+              answer: attempt.answer as Answer,
+              correct: attempt.correct,
+              errorType: attempt.errorType,
+              feedback: attempt.feedback,
+              selfRating: attempt.selfRating,
+            })),
+        };
+      }),
+    };
+  }
+
   // ---------- 内部 ----------
 
   function applyOutcome(attemptId: string, item: ItemRow, outcome: Outcome, now: Date) {
@@ -225,7 +277,7 @@ export function createLearning({ db, model, settings }: LearningDeps) {
     };
   }
 
-  return { startTopic, listTopics, nextSession, submitAttempt, rateAttempt, finishSession };
+  return { startTopic, listTopics, topicMap, nextSession, submitAttempt, rateAttempt, finishSession };
 }
 
 export type Learning = ReturnType<typeof createLearning>;

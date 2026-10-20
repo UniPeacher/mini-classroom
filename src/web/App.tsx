@@ -1,9 +1,14 @@
 import { useCallback, useEffect, useState } from 'react';
 import { type Session, type Topic, api, devNow } from './api';
 import { SessionView } from './SessionView';
+import { TopicMapView } from './TopicMapView';
 import './styles.css';
 
-type View = { name: 'home' } | { name: 'session'; session: Session } | { name: 'done'; correct: number; total: number };
+type View =
+  | { name: 'home' }
+  | { name: 'topic'; topicId: string }
+  | { name: 'session'; session: Session }
+  | { name: 'done'; correct: number; total: number };
 
 export function App() {
   const [view, setView] = useState<View>({ name: 'home' });
@@ -19,7 +24,13 @@ export function App() {
         <h1 onClick={() => setView({ name: 'home' })}>微课堂</h1>
         {devMode && <DevClock />}
       </header>
-      {view.name === 'home' && <Home onStart={(session) => setView({ name: 'session', session })} />}
+      {view.name === 'home' && (
+        <Home
+          onStart={(session) => setView({ name: 'session', session })}
+          onOpenTopic={(topicId) => setView({ name: 'topic', topicId })}
+        />
+      )}
+      {view.name === 'topic' && <TopicMapView topicId={view.topicId} onBack={() => setView({ name: 'home' })} />}
       {view.name === 'session' && (
         <SessionView session={view.session} onFinish={(correct, total) => setView({ name: 'done', correct, total })} />
       )}
@@ -37,7 +48,7 @@ export function App() {
 }
 
 /** 首页：开始学习是主操作；主题管理放在下方 */
-function Home({ onStart }: { onStart: (session: Session) => void }) {
+function Home({ onStart, onOpenTopic }: { onStart: (session: Session) => void; onOpenTopic: (topicId: string) => void }) {
   const [topics, setTopics] = useState<Topic[]>([]);
   const [preparing, setPreparing] = useState(false);
   const [error, setError] = useState('');
@@ -77,7 +88,7 @@ function Home({ onStart }: { onStart: (session: Session) => void }) {
         {topics.length === 0 && <p className="muted">先在下面输入一个想学的主题。</p>}
         {error && <p className="error">{error}</p>}
       </section>
-      <TopicList topics={topics} onCreated={refresh} />
+      <TopicList topics={topics} onCreated={refresh} onOpen={onOpenTopic} />
     </>
   );
 }
@@ -88,7 +99,7 @@ const GRAPH_STATUS: Record<Topic['graphStatus'], string> = {
   failed: '知识图谱生成失败',
 };
 
-function TopicList({ topics, onCreated }: { topics: Topic[]; onCreated: () => void }) {
+function TopicList({ topics, onCreated, onOpen }: { topics: Topic[]; onCreated: () => void; onOpen: (topicId: string) => void }) {
   const [title, setTitle] = useState('');
   const [error, setError] = useState('');
 
@@ -110,7 +121,14 @@ function TopicList({ topics, onCreated }: { topics: Topic[]; onCreated: () => vo
       <ul className="topics">
         {topics.map((t) => (
           <li key={t.id}>
-            <span>{t.title}</span>
+            {/* 图谱生成好后才能点开查看知识点 */}
+            {t.graphStatus === 'ready' ? (
+              <button className="link" onClick={() => onOpen(t.id)}>
+                {t.title}
+              </button>
+            ) : (
+              <span>{t.title}</span>
+            )}
             <span className="muted">{GRAPH_STATUS[t.graphStatus]}</span>
           </li>
         ))}

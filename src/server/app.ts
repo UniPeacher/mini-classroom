@@ -53,6 +53,8 @@ export function createApp({ learning, clock, devMode, frontendUrl }: AppDeps) {
     return c.json(learning.startTopic(title, nowOf(c.req.header('X-Dev-Now'))), 201);
   });
 
+  app.get('/api/topics/:id/map', (c) => c.json(learning.topicMap(c.req.param('id'))));
+
   app.post('/api/sessions/next', (c) => c.json(learning.nextSession(nowOf(c.req.header('X-Dev-Now')))));
 
   app.post('/api/attempts', async (c) => {

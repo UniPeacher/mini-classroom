@@ -282,3 +282,106 @@ pre code {
 .diagram pre {
   text-align: left;
 }
+
+/* 看起来像链接的按钮：主题名、返回 */
+button.link {
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--accent);
+  text-align: left;
+}
+
+button.link:hover {
+  text-decoration: underline;
+}
+
+/* 认知地图：知识点卡片网格，点开的卡片占满一整行 */
+.map-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 8px;
+}
+
+.point {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--card);
+}
+
+.point.open {
+  grid-column: 1 / -1;
+}
+
+/* 认知边缘：下一步可学的知识点 */
+.point.edge {
+  border-color: var(--accent);
+}
+
+/* 迷雾：前置还没学会的知识点 */
+.point.fog:not(.open) {
+  opacity: 0.5;
+}
+
+.point-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  border: none;
+  background: none;
+  text-align: left;
+  padding: 10px 12px;
+}
+
+.point-head .badge {
+  flex-shrink: 0;
+  font-size: 13px;
+}
+
+.point.edge .point-head .badge {
+  background: var(--accent);
+  color: #fff;
+}
+
+.point-body {
+  padding: 0 12px 12px;
+  border-top: 1px solid var(--border);
+}
+
+.record {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px dashed var(--border);
+}
+
+.record-head {
+  font-size: 14px;
+  color: var(--muted);
+  margin-bottom: 8px;
+}
+
+.record-head .ok {
+  color: var(--ok);
+}
+
+.record-head .bad {
+  color: var(--bad);
+}
+
+.record details {
+  margin: 8px 0;
+}
+
+.record summary {
+  cursor: pointer;
+  color: var(--accent);
+}
+
+blockquote {
+  margin: 0 0 8px;
+  padding: 4px 12px;
+  border-left: 3px solid var(--border);
+  white-space: pre-wrap;
+}
