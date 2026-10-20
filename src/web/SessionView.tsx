@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
-import Markdown from 'react-markdown';
 import { type Answer, type Session, type SessionItem, api } from './api';
+import { RichMarkdown } from './RichMarkdown';
 
 type Result = NonNullable<SessionItem['attempt']>;
 
@@ -89,20 +89,20 @@ function ItemView(props: {
     <div className="item">
       {item.explanation && (
         <article className="explanation">
-          <Markdown>{item.explanation}</Markdown>
+          <RichMarkdown>{item.explanation}</RichMarkdown>
         </article>
       )}
 
       <div className="question">
         {question.type === 'mcq' ? (
           <>
-            <Markdown>{question.stem}</Markdown>
+            <RichMarkdown>{question.stem}</RichMarkdown>
             <ol className="options">
               {question.options.map((option, i) => (
                 <li key={i} className={optionClass(i, choice, result)}>
                   <label>
                     <input type="radio" name={item.id} disabled={!!result} checked={choice === i} onChange={() => setChoice(i)} />
-                    <Markdown>{option}</Markdown>
+                    <RichMarkdown>{option}</RichMarkdown>
                   </label>
                 </li>
               ))}
@@ -110,7 +110,7 @@ function ItemView(props: {
           </>
         ) : (
           <>
-            <Markdown>{question.prompt}</Markdown>
+            <RichMarkdown>{question.prompt}</RichMarkdown>
             <textarea value={text} onChange={(e) => setText(e.target.value)} disabled={!!result} rows={5} placeholder="用自己的话回答" />
           </>
         )}
@@ -126,11 +126,11 @@ function ItemView(props: {
       {result && (
         <div className={`result ${result.correct ? 'ok' : 'bad'}`}>
           <strong>{result.correct ? '答对了' : `答错了 · ${ERROR_LABEL[result.errorType!]}`}</strong>
-          {result.feedback && <Markdown>{result.feedback}</Markdown>}
+          {result.feedback && <RichMarkdown>{result.feedback}</RichMarkdown>}
           {'referenceAnswer' in result.reveal && (
             <details open={!result.correct}>
               <summary>参考答案（仅供对照，不是唯一标准）</summary>
-              <Markdown>{result.reveal.referenceAnswer}</Markdown>
+              <RichMarkdown>{result.reveal.referenceAnswer}</RichMarkdown>
             </details>
           )}
           {result.needsRating ? (

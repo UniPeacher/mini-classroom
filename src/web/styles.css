@@ -257,3 +257,28 @@ pre code {
 .dev-clock input {
   width: auto;
 }
+
+.diagram {
+  margin: 16px 0;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--card);
+  overflow-x: auto;
+  text-align: center;
+}
+
+/* Mermaid 图按原始尺寸显示，超宽时在框内横向滚动；AI 画的 SVG 宽度不超过 640，按容器缩放 */
+.diagram img {
+  max-width: 100%;
+  height: auto;
+}
+
+/* AI 画的 SVG 按浅色背景设计，深色模式下也保持浅底，保证对比度 */
+.diagram.svg {
+  background: #ffffff;
+}
+
+.diagram pre {
+  text-align: left;
+}

@@ -11,7 +11,7 @@ import {
   reviewSchema,
 } from '../shared/content';
 import type { StructuredModel } from './gateway';
-import { WRITING_PRINCIPLES } from './writing-style';
+import { DIAGRAM_GUIDE, WRITING_PRINCIPLES } from './writing-style';
 
 const SYSTEM = `你是"微课堂"的教学设计者。微课堂帮助学习者利用碎片时间真正学会、能用、长期不忘一个主题。
 学习者常在碎片时间、注意力有限的状态下阅读，内容必须一眼能抓住要点。
@@ -97,11 +97,14 @@ export function generateLesson(
 
 请为这个知识点写一段讲解，并附一道当场检验的小题。
 - 讲解形式：${EXPLAIN_GUIDE[forms.explainForm]}
-- 讲解用 Markdown，讲清楚就停，一般 200~500 字（不含代码）。可以借助学习者已学过的前置知识点。
+- 讲解用 Markdown，讲清楚就停，一般 200~500 字（不含代码和图）。可以借助学习者已学过的前置知识点。
+- 按下面的图解要求，为讲解配图。
 - 小题（check）形式：${questionGuide(forms.questionForm, random)}
 - 小题要检验理解：换用与讲解中不同的示例或场景，不要直接复用讲解里的代码和原句。
 - 小题自带作答所需的全部信息（代码、情境），不写"根据上文""如讲解所示"。
-- estSeconds：读完讲解并答完小题大约需要的秒数。`,
+- estSeconds：读完讲解并答完小题大约需要的秒数。
+
+${DIAGRAM_GUIDE}`,
   });
 }
 
@@ -122,7 +125,10 @@ export function generateReview(
 - 题目形式：${questionGuide(questionForm, random)}
 - 换一个具体场景或角度来考，检验能否举一反三，而不是背诵定义。
 - 题目自带作答所需的全部信息（代码、情境），学习者不需要回忆任何讲解原文就能读懂题目。
-- estSeconds：答完这道题大约需要的秒数。`,
+- 看图更容易考查理解时（例如"图中哪一步会报错"），题目和解析里也可以用图，按下面的图解要求画。
+- estSeconds：答完这道题大约需要的秒数。
+
+${DIAGRAM_GUIDE}`,
   });
 }
 

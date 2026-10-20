@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { StructuredModel, StructuredRequest } from '../../src/ai/gateway';
 import { generateGraph, generateLesson, generateReview, gradeShortAnswer } from '../../src/ai/generators';
-import { WRITING_PRINCIPLES } from '../../src/ai/writing-style';
+import { DIAGRAM_GUIDE, WRITING_PRINCIPLES } from '../../src/ai/writing-style';
 import { SHORT } from '../fixtures/fake-model';
 
 /** 只记录请求、不返回内容的模型 */
@@ -35,5 +35,12 @@ describe('提示词', () => {
     await generateLesson(model, ctx, { explainForm: 'explain_direct', questionForm: 'mcq' }, () => 0);
     expect(requests[0]!.prompt).toContain('字母 C，answerIndex 为 2');
     expect(requests[1]!.prompt).toContain('字母 A，answerIndex 为 0');
+  });
+
+  it('讲解和复习题都要求积极配图', async () => {
+    const { model, requests } = recorder();
+    await generateLesson(model, ctx, { explainForm: 'explain_direct', questionForm: 'mcq' });
+    await generateReview(model, ctx, 'short_answer');
+    for (const request of requests) expect(request.prompt).toContain(DIAGRAM_GUIDE);
   });
 });
