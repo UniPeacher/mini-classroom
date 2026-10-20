@@ -1,7 +1,7 @@
 import { MockLanguageModelV4 } from 'ai/test';
 import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
-import { AiOutputError, createStructuredModel } from '../../src/ai/gateway';
+import { AiOutputError, createStructuredModel, modelFromEnv } from '../../src/ai/gateway';
 
 /** 依次返回给定文本的 Mock 模型，并记录调用次数 */
 function mockModel(texts: string[]) {
@@ -49,5 +49,19 @@ describe('结构化生成网关', () => {
     const { model, calls } = mockModel(['{"score": -1}']);
     await expect(createStructuredModel(model, { maxAttempts: 3 }).generate(request)).rejects.toBeInstanceOf(AiOutputError);
     expect(calls()).toBe(3);
+  });
+});
+
+describe('按配置选择模型供应商（ADR 0005）', () => {
+  it('OpenAI 兼容、Anthropic、Gemini 三种格式都能构建', () => {
+    expect(modelFromEnv({ MODEL_PROVIDER: 'openai-compatible', MODEL_BASE_URL: 'http://localhost:8317/v1', MODEL_NAME: 'm' }).generate).toBeTypeOf('function');
+    expect(modelFromEnv({ MODEL_PROVIDER: 'anthropic', MODEL_NAME: 'claude-sonnet-5-5', MODEL_API_KEY: 'k', MODEL_REASONING_EFFORT: 'high' }).generate).toBeTypeOf('function');
+    expect(modelFromEnv({ MODEL_PROVIDER: 'google', MODEL_NAME: 'gemini-3-pro', MODEL_API_KEY: 'k', MODEL_REASONING_EFFORT: 'medium' }).generate).toBeTypeOf('function');
+  });
+
+  it('不支持的供应商、缺少模型名时说明原因', () => {
+    expect(() => modelFromEnv({ MODEL_PROVIDER: 'other', MODEL_NAME: 'm' })).toThrow('不支持的模型供应商');
+    expect(() => modelFromEnv({ MODEL_PROVIDER: 'anthropic' })).toThrow('MODEL_NAME');
+    expect(() => modelFromEnv({ MODEL_PROVIDER: 'openai-compatible', MODEL_NAME: 'm' })).toThrow('MODEL_BASE_URL');
   });
 });

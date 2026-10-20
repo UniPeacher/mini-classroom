@@ -1,3 +1,5 @@
+import { createAnthropic } from '@ai-sdk/anthropic';
+import { createGoogle } from '@ai-sdk/google';
 import { createOpenAICompatible } from '@ai-sdk/openai-compatible';
 import { type LanguageModel, NoObjectGeneratedError, Output, generateText } from 'ai';
 import type { z } from 'zod';
@@ -58,24 +60,52 @@ export function createStructuredModel(model: LanguageModel, options: StructuredM
   };
 }
 
-/** 按环境变量构建模型（ADR 0005：供应商只由配置决定）。 */
+/** 支持的模型供应商：OpenAI 兼容格式、Anthropic、Gemini（ADR 0005） */
+export const PROVIDERS = ['openai-compatible', 'anthropic', 'google'] as const;
+export type Provider = (typeof PROVIDERS)[number];
+
+/** 按环境变量构建模型（ADR 0005：供应商只由配置决定，业务代码不感知）。 */
 export function modelFromEnv(env: NodeJS.ProcessEnv = process.env): StructuredModel {
   const provider = env.MODEL_PROVIDER ?? 'openai-compatible';
-  if (provider !== 'openai-compatible') {
-    throw new Error(`暂不支持的模型供应商：${provider}（切片 1 只接入 openai-compatible）`);
-  }
-  const baseURL = required(env, 'MODEL_BASE_URL');
   const modelName = required(env, 'MODEL_NAME');
-  const compatible = createOpenAICompatible({
-    name: 'main',
-    baseURL,
-    apiKey: env.MODEL_API_KEY || undefined,
-    supportsStructuredOutputs: env.MODEL_SUPPORTS_STRUCTURED_OUTPUTS !== 'false',
-  });
-  const reasoningEffort = env.MODEL_REASONING_EFFORT;
-  return createStructuredModel(compatible.chatModel(modelName), {
-    providerOptions: reasoningEffort ? { main: { reasoningEffort } } : undefined,
-  });
+  const apiKey = env.MODEL_API_KEY || undefined;
+  const baseURL = env.MODEL_BASE_URL || undefined;
+  const effort = env.MODEL_REASONING_EFFORT || undefined;
+
+  switch (provider) {
+    case 'openai-compatible': {
+      const compatible = createOpenAICompatible({
+        name: 'main',
+        baseURL: required(env, 'MODEL_BASE_URL'),
+        apiKey,
+        supportsStructuredOutputs: env.MODEL_SUPPORTS_STRUCTURED_OUTPUTS !== 'false',
+      });
+      return createStructuredModel(compatible.chatModel(modelName), {
+        providerOptions: effort ? { main: { reasoningEffort: effort } } : undefined,
+      });
+    }
+    case 'anthropic': {
+      const anthropic = createAnthropic({ baseURL, apiKey });
+      return createStructuredModel(anthropic(modelName), {
+        providerOptions: effort ? { anthropic: { effort } } : undefined,
+      });
+    }
+    case 'google': {
+      const google = createGoogle({ baseURL, apiKey });
+      return createStructuredModel(google(modelName), {
+        providerOptions: effort ? { google: { thinkingConfig: { thinkingLevel: googleThinkingLevel(effort) } } } : undefined,
+      });
+    }
+    default:
+      throw new Error(`不支持的模型供应商：${provider}（可选：${PROVIDERS.join('、')}）`);
+  }
+}
+
+/** Gemini 的思考强度只有 low / medium / high 三档 */
+function googleThinkingLevel(effort: string): 'low' | 'medium' | 'high' {
+  if (effort === 'low' || effort === 'minimal') return 'low';
+  if (effort === 'medium') return 'medium';
+  return 'high';
 }
 
 function required(env: NodeJS.ProcessEnv, key: string): string {

@@ -1,13 +1,24 @@
 import type { ExplainForm, QuestionForm } from '../domain/forms';
+import type { Stage } from '../domain/memory';
 import {
+  type AppealVerdict,
+  AppealVerdictSchema,
+  CheatsheetSchema,
+  type ConnectionGrade,
+  ConnectionGradeSchema,
+  type Decomposition,
+  DecompositionSchema,
   type Grade,
   GradeSchema,
   type Graph,
   GraphSchema,
   type LessonContent,
+  type OpenQuestion,
+  type PlacementPlan,
+  type Question,
   type ReviewContent,
-  type ShortAnswer,
   lessonSchema,
+  placementSchema,
   reviewSchema,
 } from '../shared/content';
 import type { StructuredModel } from './gateway';
@@ -21,6 +32,7 @@ const SYSTEM = `你是"微课堂"的教学设计者。微课堂帮助学习者�
 - 内容必须准确。不确定的说法宁可不写，也不要编造。
 - 讲解面向第一次接触该知识点的学习者，讲清楚"是什么、为什么、怎么用、容易错在哪"。
 - 涉及编程的主题，用短小可读的代码示例，放在 Markdown 代码块里。
+- 主题不限于编程。不是编程的主题，代码题换成该领域里的真实材料：一段做法、一个方案、一组步骤、一段论证。
 
 ${WRITING_PRINCIPLES}`;
 
@@ -31,10 +43,16 @@ export interface PointContext {
   summary: string;
   /** 已学过的前置知识点，可作为讲解的挂靠点 */
   prerequisites: string[];
-  /** 易混知识点，用于选择题干扰项和误解标注 */
+  /** 易混知识点，用于选择题干扰项、误解标注和对比讲解 */
   confusables: string[];
   /** 学习者开始这一节时写的补充说明，用于调整讲解和出题 */
   guidance?: string;
+  /** 掌握阶段：决定复习题考到什么程度 */
+  stage?: Stage;
+  /** 最近一次误解的内容：对比讲解针对它来讲 */
+  misconception?: string | null;
+  /** 学习者的已有知识：可作为类比和挂靠点 */
+  existingKnowledge?: string[];
 }
 
 /** 生成骨架知识图谱 */
@@ -51,7 +69,7 @@ export function generateGraph(model: StructuredModel, topicTitle: string): Promi
 3. title 简短，同一个概念全图使用同一个名称。summary 用一句话写清学会后能做什么，用具体的说法，不写"了解""掌握相关知识"这类空话。
 4. 关系有三种：
    - prerequisite：学 to 之前必须先懂 from；
-   - composition：from 是 to 的一部分；
+   - composition：from 是 to 的一部分，例如 Partial、Pick 是"工具类型"的一部分；
    - confusable：二者容易混淆，例如 any 与 unknown。
 5. 前置关系不能有环。只标真正必要的前置，不要把"推荐顺序"都写成前置。`,
   });
@@ -61,26 +79,49 @@ const EXPLAIN_GUIDE: Record<ExplainForm, string> = {
   explain_direct: '直接讲解：一句话说清它是什么、解决什么问题 → 一个最小示例 → 它是怎么起作用的 → 最常见的一个误区。',
   explain_analogy: '类比讲解：先用一个贴切的、学习者已知的事物做类比，再映射回知识点本身，最后指出类比在哪里不成立。',
   explain_counterexample: '反例讲解：先给出一个看似正确、其实错误的写法或理解，揭示它为什么错，再给出正确理解和写法。',
+  explain_diagram:
+    '图解：以一张图为主体讲清机制。先一句话说它是什么，接着是图，再用 2~4 句话带学习者按顺序看图；图承担主要的解释，文字只补图里放不下的。',
+  explain_steps:
+    '分步揭示：把机制拆成 3~6 步，学习者一步一步点开。explanation 只写一两句开场，说明接下来要看懂什么；steps 每项是一步，用 Markdown，每步只推进一件事，可以带代码或图。',
+  explain_predict:
+    '预测揭晓：先给一段代码或一个情境，让学习者预测结果，再揭晓。predict.scenario 写情境（可含代码块），predict.options 是 2~4 个可能的结果，predict.answerIndex 是正确结果，predict.reveal 一两句话揭晓为什么；explanation 写揭晓之后的完整讲解。预测不计分，目的是让学习者先动脑。',
+  explain_contrast:
+    '对比讲解：学习者刚把这个知识点和别的概念搞混了。把它和最容易混淆的那个概念并排对比：用一张对比表或对比图写清两者在定义、用法、结果上的差别，再给一个能一眼区分两者的例子，最后点出学习者刚才那种误解错在哪。',
 };
 
 const OPTION_LETTERS = ['A', 'B', 'C', 'D'] as const;
 
 /**
- * 题目形式说明。选择题正确答案的位置由代码随机决定再告诉模型——
+ * 题目形式说明。选择题、点选错误行的正确位置由代码随机决定再告诉模型——
  * 让模型自己"随机放"并不可靠，实测会集中在同一个位置。
  */
 function questionGuide(form: QuestionForm, random: () => number): string {
-  if (form === 'short_answer') {
-    return `简答题：要求学习者用自己的话解释，或写一小段代码/表达式，2 分钟内能答完。prompt 一句话写清要回答什么、答到什么程度。referenceAnswer 给出一个简洁的正确答案；keyPoints 列出 1~5 个判定对错的关键要点，每个要点一句话。`;
+  const openRules =
+    'referenceAnswer 给出一个简洁的正确答案（只作参考，同一道题允许有多种正确答案）；keyPoints 列出 1~5 个判定对错的关键要点，每个要点一句话。';
+  switch (form) {
+    case 'short_answer':
+      return `简答题：要求学习者用自己的话解释，或写一小段代码/表达式，2 分钟内能答完。prompt 一句话写清要回答什么、答到什么程度。${openRules}`;
+    case 'pick_line': {
+      const answerIndex = Math.floor(random() * 4);
+      return `点选错误行：给出 5~10 行代码或推理步骤，其中恰好一行有错，有错的是第 ${answerIndex + 1} 行（answerIndex 为 ${answerIndex}）。lines 每项一行，不带行号；language 是代码语言（如 "ts"），不是代码时为 null。prompt 一句话说明这段代码或步骤要做什么。错误要是这个知识点上真实常见的错误，其余各行都必须正确。explanation 先说第 ${answerIndex + 1} 行错在哪、正确写法是什么，再一句话说明为什么其他行没问题。`;
+    }
+    case 'complete':
+      return `补全：给出一段接近真实工作的代码或材料，挖掉体现这个知识点的关键部分，用 ____ 标出空缺（只挖一处）。template 是带空缺的完整内容；language 是代码语言，不是代码时为 null。prompt 一句话说明要补出什么效果。${openRules}`;
+    case 'fix':
+      return `修正：给出一段接近真实工作的、有问题的代码或做法（flawed），问题正好出在这个知识点上，乍看不容易发现。prompt 说明它本来要实现什么、现在出了什么现象；language 是代码语言，不是代码时为 null。referenceAnswer 是修正后的版本；keyPoints 写判定修正是否到位的要点。`;
+    case 'mcq': {
+      const answerIndex = Math.floor(random() * OPTION_LETTERS.length);
+      return `单选题：4 个选项，只有 1 个正确，正确选项放在第 ${answerIndex + 1} 个（字母 ${OPTION_LETTERS[answerIndex]}，answerIndex 为 ${answerIndex}）。题干一句话问清楚要判断什么；选项长度相近、互不重叠。每个错误选项都要代表一种真实存在的误解，并在 misconception 中用一句话写明这种误解；如果存在易混知识点，优先用它来构造干扰项。正确选项的 misconception 为 null。explanation 第一句说正确选项为什么对，再用一句话分别说明每个错误选项错在哪；提到选项时用页面显示的字母 A、B、C、D，不用数字序号。`;
+    }
   }
-  const answerIndex = Math.floor(random() * OPTION_LETTERS.length);
-  return `单选题：4 个选项，只有 1 个正确，正确选项放在第 ${answerIndex + 1} 个（字母 ${OPTION_LETTERS[answerIndex]}，answerIndex 为 ${answerIndex}）。题干一句话问清楚要判断什么；选项长度相近、互不重叠。每个错误选项都要代表一种真实存在的误解，并在 misconception 中用一句话写明这种误解；如果存在易混知识点，优先用它来构造干扰项。正确选项的 misconception 为 null。explanation 第一句说正确选项为什么对，再用一句话分别说明每个错误选项错在哪；提到选项时用页面显示的字母 A、B、C、D，不用数字序号。`;
 }
 
 function describePoint(ctx: PointContext): string {
   const lines = [`学习主题：${ctx.topicTitle}`, `知识点：${ctx.title}`, `要掌握的内容：${ctx.summary}`];
   if (ctx.prerequisites.length) lines.push(`学习者已学过的前置知识点：${ctx.prerequisites.join('、')}`);
   if (ctx.confusables.length) lines.push(`易混知识点：${ctx.confusables.join('、')}`);
+  if (ctx.existingKnowledge?.length) lines.push(`学习者的已有知识（可用来类比和挂靠）：${ctx.existingKnowledge.join('、')}`);
+  if (ctx.misconception) lines.push(`学习者最近的误解：${ctx.misconception}`);
   if (ctx.guidance) {
     lines.push(
       `\n学习者对这一节的补充说明（在内容准确、符合下面各项要求和输出格式的前提下，据此调整讲解和出题的角度、深度、例子与图解）：\n<guidance>\n${ctx.guidance}\n</guidance>`,
@@ -96,13 +137,14 @@ export function generateLesson(
   forms: { explainForm: ExplainForm; questionForm: QuestionForm },
   random: () => number = Math.random,
 ): Promise<LessonContent & { estSeconds: number }> {
+  const relearning = ctx.stage && ctx.stage !== 'unlearned' && ctx.stage !== 'understand';
   return model.generate({
     name: 'lesson',
-    schema: lessonSchema(forms.questionForm),
+    schema: lessonSchema(forms.explainForm, forms.questionForm),
     system: SYSTEM,
     prompt: `${describePoint(ctx)}
 
-请为这个知识点写一段讲解，并附一道当场检验的小题。
+请为这个知识点写一段讲解，并附一道当场检验的小题。${relearning ? '学习者之前学过这个知识点，但刚刚答错了，这次讲解要纠正他的理解。' : ''}
 - 讲解形式：${EXPLAIN_GUIDE[forms.explainForm]}
 - 讲解用 Markdown，讲清楚就停，一般 200~500 字（不含代码和图）。可以借助学习者已学过的前置知识点。
 - 按下面的图解要求，为讲解配图。
@@ -115,7 +157,14 @@ ${DIAGRAM_GUIDE}`,
   });
 }
 
-/** 生成复习题 */
+const STAGE_REVIEW_GUIDE: Partial<Record<Stage, string>> = {
+  inferred: '学习者在摸底时被推断已经会这个知识点，但没有直接考过。出一道题抽查他是否真的掌握：考核心理解，不考冷门细节。',
+  recall: '学习者之前已学过这个知识点，现在要隔一段时间后检验是否还记得、是否真正理解。换一个具体场景或角度来考，检验能否举一反三，而不是背诵定义。',
+  apply: '学习者已能回忆这个知识点，现在检验能否在类似真实工作的任务里用对它。题目取材于真实工作中会遇到的情形，而不是概念辨析。',
+  retain: '学习者已能熟练应用这个知识点，这是一次长间隔后的保持检验。可以把它和相关知识放在一起综合考，但答对的关键仍在这个知识点上。',
+};
+
+/** 生成复习题（含推断掌握的抽查题） */
 export function generateReview(
   model: StructuredModel,
   ctx: PointContext,
@@ -128,9 +177,8 @@ export function generateReview(
     system: SYSTEM,
     prompt: `${describePoint(ctx)}
 
-学习者之前已学过这个知识点，现在要隔一段时间后检验是否还记得、是否真正理解。请出一道复习题。
+${STAGE_REVIEW_GUIDE[ctx.stage ?? 'recall'] ?? STAGE_REVIEW_GUIDE.recall} 请出一道题。
 - 题目形式：${questionGuide(questionForm, random)}
-- 换一个具体场景或角度来考，检验能否举一反三，而不是背诵定义。
 - 题目自带作答所需的全部信息（代码、情境），学习者不需要回忆任何讲解原文就能读懂题目。
 - 看图更容易考查理解时（例如"图中哪一步会报错"），题目和解析里也可以用图，按下面的图解要求画。
 - estSeconds：答完这道题大约需要的秒数。
@@ -139,22 +187,36 @@ ${DIAGRAM_GUIDE}`,
   });
 }
 
-/** 批改简答题 */
-export function gradeShortAnswer(
+/** 开放题的题面，批改和申诉时给模型看 */
+function describeOpenQuestion(question: OpenQuestion): string {
+  const fence = (language: string | null, body: string) => `\`\`\`${language ?? ''}\n${body}\n\`\`\``;
+  if (question.type === 'complete') return `补全题：${question.prompt}\n带空缺的模板：\n${fence(question.language, question.template)}`;
+  if (question.type === 'fix') return `修正题：${question.prompt}\n有问题的版本：\n${fence(question.language, question.flawed)}`;
+  return `简答题：${question.prompt}`;
+}
+
+const FEEDBACK_RULES = `- feedback：用"你"称呼学习者，2~4 句话，按以下要求写：
+  - 第一句直接说最关键的一点：答对时说清你已经掌握了什么，要具体；答错时说清缺了哪个要点或哪里说错了。
+  - 答错时就事论事：给出正确说法和原因，不写"很遗憾""别灰心"之类的话。
+  - 学习者的作答有错误前提时，直接指出并给出正确理解。
+  - 最后可以给一个马上能做的小动作，例如"对照参考答案第 2 个要点再看一遍"。`;
+
+/** 批改开放题：简答、补全、修正 */
+export function gradeOpenAnswer(
   model: StructuredModel,
   ctx: Pick<PointContext, 'topicTitle' | 'title'>,
-  question: ShortAnswer,
+  question: OpenQuestion,
   answer: string,
 ): Promise<Grade> {
   return model.generate({
     name: 'grade',
     schema: GradeSchema,
     system: SYSTEM,
-    prompt: `请批改学习者的简答。
+    prompt: `请批改学习者的作答。
 
 学习主题：${ctx.topicTitle}
 知识点：${ctx.title}
-题目：${question.prompt}
+${describeOpenQuestion(question)}
 参考答案：${question.referenceAnswer}
 判定要点：
 ${question.keyPoints.map((p, i) => `${i + 1}. ${p}`).join('\n')}
@@ -165,15 +227,176 @@ ${answer}
 """
 
 判定规则：
-- 覆盖全部判定要点、且没有错误说法，判为正确（correct = true）。表述方式不同也算对；参考答案不是唯一标准。
+- 覆盖全部判定要点、且没有错误说法，判为正确（correct = true）。表述或写法不同也算对；参考答案不是唯一标准，能达到同样效果的其他正确写法也算对。
 - 否则判为错误，并给出错误类型：
   - misconception（误解）：作答中出现了错误的认知，比如把概念说反、和易混概念搞混；
   - forgetting（遗忘）：空白、想不起来，或者只答出一部分但没有说错。
 - 正确时 errorType 为 null。
-- feedback：用"你"称呼学习者，2~4 句话，按以下要求写：
-  - 第一句直接说最关键的一点：答对时说清你已经掌握了什么，要具体；答错时说清缺了哪个要点或哪里说错了。
-  - 答错时就事论事：给出正确说法和原因，不写"很遗憾""别灰心"之类的话。
-  - 学习者的作答有错误前提时，直接指出并给出正确理解。
-  - 最后可以给一个马上能做的小动作，例如"对照参考答案第 2 个要点再看一遍"。`,
+${FEEDBACK_RULES}`,
   });
+}
+
+/** 批改联结练习：学习者用自己的话说明两个知识之间的关系 */
+export function gradeConnection(
+  model: StructuredModel,
+  ctx: { topicTitle: string; title: string; summary: string; partner: string },
+  prompt: string,
+  answer: string,
+): Promise<ConnectionGrade> {
+  return model.generate({
+    name: 'connection_grade',
+    schema: ConnectionGradeSchema,
+    system: SYSTEM,
+    prompt: `学习者刚学完一个知识点，被要求用自己的话说明它和另一个知识之间的关系。请判断这段说明是否成立。
+
+学习主题：${ctx.topicTitle}
+刚学的知识点：${ctx.title}（${ctx.summary}）
+另一个知识：${ctx.partner}
+题目：${prompt}
+
+学习者的说明：
+"""
+${answer}
+"""
+
+判定规则：
+- 说明中两者的关系说对了（谁是谁的前提、谁是谁的一部分、有什么异同、什么时候用哪个，说对其中一种即可），且没有错误说法，accepted 为 true。不要求完整，只要求正确。
+- 关系说错、把两者混为一谈，或者只复述了其中一个知识点而没有说关系，accepted 为 false。
+- relation：用一句话概括两者真正的关系（不超过 30 字），无论是否认可都要写。
+${FEEDBACK_RULES}`,
+  });
+}
+
+/** 申诉：学习者对批改有异议，重新判定 */
+export function judgeAppeal(
+  model: StructuredModel,
+  ctx: Pick<PointContext, 'topicTitle' | 'title'>,
+  input: { question: Question; answer: string; originalFeedback: string; reason: string },
+): Promise<AppealVerdict> {
+  return model.generate({
+    name: 'appeal',
+    schema: AppealVerdictSchema,
+    system: SYSTEM,
+    prompt: `学习者对一次批改提出申诉，请重新判定。
+
+学习主题：${ctx.topicTitle}
+知识点：${ctx.title}
+题目（JSON，含参考答案）：
+${JSON.stringify(input.question, null, 2)}
+
+学习者的作答：
+"""
+${input.answer}
+"""
+
+原来的批改结论：判为错误。批改反馈：${input.originalFeedback}
+
+学习者的申诉理由：
+"""
+${input.reason}
+"""
+
+请独立判断，不要因为学习者坚持就改判，也不要维护原判：
+- accepted：学习者的答案也成立（参考答案不是唯一标准），这次作答改判为答对；
+- void：题目或参考答案本身有错误或歧义，这道题作废，不计入记忆；
+- rejected：原判正确，维持原判。
+feedback：用"你"称呼学习者，2~3 句话，说清判定的理由；改判为答对时说清你的答案为什么也成立，维持原判时指出答案的具体问题。`,
+  });
+}
+
+/** 拆解：为反复失败的知识点生成 1~3 个更基础的前置知识点 */
+export function decomposePoint(
+  model: StructuredModel,
+  ctx: PointContext & { existingTitles: string[] },
+): Promise<Decomposition> {
+  return model.generate({
+    name: 'decomposition',
+    schema: DecompositionSchema,
+    system: SYSTEM,
+    prompt: `${describePoint(ctx)}
+
+学习者在这个知识点上已经连续答错多次，说明它对他来说跨度太大。请找出学懂它之前必须先掌握、但学习者很可能还不会的 1~3 个更基础的知识点。
+- 每个都要比原知识点更基础、更小，能单独教授、单独检验。
+- 不要与已有的这些知识点重复：${ctx.existingTitles.join('、')}
+- title 简短；summary 用一句话写清学会后能做什么。`,
+  });
+}
+
+/** 摸底诊断的准备：从背景自述推断已有知识和起点，并为候选知识点各出一道选择题 */
+export function preparePlacement(
+  model: StructuredModel,
+  input: {
+    topicTitle: string;
+    background: string;
+    points: { id: string; title: string; summary: string }[];
+    probeIds: string[];
+  },
+  random: () => number = Math.random,
+): Promise<PlacementPlan> {
+  const probes = input.points.filter((p) => input.probeIds.includes(p.id));
+  // 每道题的正确选项位置由代码随机决定（理由见 questionGuide）
+  const positions = probes.map((p) => {
+    const answerIndex = Math.floor(random() * OPTION_LETTERS.length);
+    return `${p.id}：${p.title}（正确选项放在 ${OPTION_LETTERS[answerIndex]}，answerIndex 为 ${answerIndex}）`;
+  });
+  return model.generate({
+    name: 'placement',
+    schema: placementSchema(input.probeIds),
+    system: SYSTEM,
+    prompt: `学习者要开始学习「${input.topicTitle}」。开始前做一次约 3 分钟的摸底，确定他已经会什么、从哪里开始学。
+
+学习者的背景自述：
+"""
+${input.background || '（没有填写）'}
+"""
+
+这个主题的知识点（id：标题 —— 概要），按推荐学习顺序：
+${input.points.map((p) => `${p.id}：${p.title} —— ${p.summary}`).join('\n')}
+
+请完成三件事：
+1. existingKnowledge：从背景自述中提炼学习者已经具备、可作为新知识挂靠点的知识，每条一个短语（如"Python 基础语法""会用 Excel 做透视表"），可以不属于这个主题；自述里没有就给空数组。最多 8 条。
+2. likelyKnownIds：根据背景自述，从下面的候选知识点中挑出学习者很可能已经会的（只填 id），作为摸底的起点；判断不了就给空数组。
+3. probes：为下面每个候选知识点各出一道单选题，检验是否真的会。题目要能区分"真会"和"听说过"，不考冷门细节。
+   - 每题 4 个选项，只有 1 个正确，正确选项放在下面为每题指定的位置。题干一句话问清楚要判断什么；选项长度相近、互不重叠。
+   - 每个错误选项代表一种真实存在的误解，在 misconception 中用一句话写明；正确选项的 misconception 为 null。
+   - explanation 第一句说正确选项为什么对；提到选项时用字母 A、B、C、D。
+   - 页面会另外加一个"不知道"选项，你不要写。
+
+候选知识点：
+${positions.join('\n')}`,
+  });
+}
+
+/** 生成速查表：只依据给出的知识点、易混对比和学习者的联结原话 */
+export async function generateCheatsheet(
+  model: StructuredModel,
+  input: {
+    scopeTitle: string;
+    points: { title: string; summary: string; topicTitle: string; explanation: string | null }[];
+    confusablePairs: [string, string][];
+    connections: { from: string; to: string; quote: string }[];
+  },
+): Promise<string> {
+  const { markdown } = await model.generate({
+    name: 'cheatsheet',
+    schema: CheatsheetSchema,
+    system: SYSTEM,
+    prompt: `请为学习者生成一份知识速查表（Markdown），范围：${input.scopeTitle}。速查表用于日后快速回顾和查用，不是教程。
+
+收录的知识点（标题 —— 概要；后面附学习者学过的讲解原文，供你提炼要点）：
+${input.points.map((p) => `### ${p.title}（${p.topicTitle}）\n${p.summary}\n${p.explanation ? `讲解原文：\n${p.explanation.slice(0, 1500)}` : ''}`).join('\n\n')}
+
+易混知识点对：${input.confusablePairs.length ? input.confusablePairs.map(([a, b]) => `${a} / ${b}`).join('；') : '无'}
+
+学习者自己建立的联结（保留原话）：
+${input.connections.length ? input.connections.map((c) => `- ${c.from} ↔ ${c.to}：「${c.quote}」`).join('\n') : '无'}
+
+要求：
+- 以一级标题写速查表名称，按主题和组成关系分组，每个知识点用二级或三级标题。
+- 每个知识点 2~5 行：一句话是什么、最常用的写法或做法（代码题给最小代码片段）、最容易错的地方。
+- 每组易混知识点给一张对比表。
+- 学习者的联结原话放在相关知识点下，用引用块标出"我的理解"。
+- 只写给出的知识点，不扩展新内容。`,
+  });
+  return markdown;
 }
