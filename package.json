@@ -3,7 +3,6 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "pnpm run \"/^dev:(server|web)$/\"",
     "dev:server": "tsx watch src/server/main.ts",
     "dev:web": "vite",
     "build:web": "vite build",
