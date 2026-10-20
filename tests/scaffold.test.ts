@@ -6,7 +6,7 @@ import { createHarness } from './fixtures/harness';
 describe('脚手架', () => {
   it('健康检查接口返回 ok', async () => {
     const { call } = createHarness();
-    expect(await call('GET', '/api/health')).toEqual({ status: 200, body: { ok: true } });
+    expect(await call('GET', '/api/health')).toEqual({ status: 200, body: { ok: true, devMode: true } });
   });
 
   it('内存数据库执行迁移后可以读写', () => {

@@ -184,6 +184,16 @@ export function createLearning({ db, model, settings }: LearningDeps) {
     const rows = new Map(getItems(db, links.map((l) => l.itemId)).map((r) => [r.id, r]));
     const done = db.select().from(attempts).where(eq(attempts.sessionId, sessionId)).all();
     const titles = new Map(loadPoints(db).map((p) => [p.id, p.title]));
+    // 之前的节里讲过的知识点，这次的讲解就是重讲
+    const taughtBefore = new Set(
+      db
+        .select({ knowledgePointId: items.knowledgePointId, sessionId: attempts.sessionId })
+        .from(attempts)
+        .innerJoin(items, eq(attempts.itemId, items.id))
+        .all()
+        .filter((r) => r.sessionId !== sessionId)
+        .map((r) => r.knowledgePointId),
+    );
     return {
       id: sessionId,
       items: links.map((link) => {
@@ -193,6 +203,7 @@ export function createLearning({ db, model, settings }: LearningDeps) {
         return {
           id: row.id,
           kind: row.kind,
+          purpose: purposeOf(row, taughtBefore),
           form: row.form,
           knowledgePointId: row.knowledgePointId,
           title: titles.get(row.knowledgePointId) ?? '',
@@ -218,6 +229,14 @@ export function createLearning({ db, model, settings }: LearningDeps) {
 }
 
 export type Learning = ReturnType<typeof createLearning>;
+
+/** 这一项在本节中的用途：新学、重讲（之前讲过但没学会）或复习 */
+export type ItemPurpose = 'new' | 'advance' | 'review';
+
+function purposeOf(item: ItemRow, taughtBefore: Set<string>): ItemPurpose {
+  if (item.kind === 'review') return 'review';
+  return taughtBefore.has(item.knowledgePointId) ? 'advance' : 'new';
+}
 
 function questionOf(item: ItemRow): Question {
   return item.kind === 'lesson' ? (item.content as LessonContent).check : (item.content as ReviewContent).question;

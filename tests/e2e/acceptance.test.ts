@@ -21,6 +21,7 @@ describe('验收：从新建主题到第二节微课堂', () => {
     const titles1 = first.items.map((i: any) => i.title);
     expect(titles1).toEqual(['联合类型', 'unknown 类型收窄']);
     const [union, unknown] = first.items;
+    expect(first.items.every((i: any) => i.purpose === 'new')).toBe(true);
     expect(union.question.type).toBe('mcq');
     expect(unknown.question.type).toBe('short_answer');
     // 作答前不泄露答案
@@ -57,6 +58,7 @@ describe('验收：从新建主题到第二节微课堂', () => {
 
     const unknownAgain = second.items.find((i: any) => i.knowledgePointId === unknown.knowledgePointId);
     expect(unknownAgain).toBeDefined();
+    expect(unknownAgain.purpose).toBe('advance');
     expect(unknownAgain.form).not.toBe(unknown.form); // 换一种讲解形式
     expect(unknownAgain.question.type).not.toBe(unknown.question.type); // 小题也换形式
 
@@ -65,6 +67,7 @@ describe('验收：从新建主题到第二节微课堂', () => {
       (i: any) => i.knowledgePointId !== unknown.knowledgePointId && i.knowledgePointId !== union.knowledgePointId,
     );
     expect(newOnes.length).toBeGreaterThanOrEqual(1);
+    expect(newOnes.every((i: any) => i.purpose === 'new')).toBe(true);
   });
 });
 

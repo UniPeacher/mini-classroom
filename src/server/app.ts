@@ -36,7 +36,7 @@ export function createApp({ learning, clock, devMode }: AppDeps) {
     return c.json({ error: '服务内部错误' }, 500);
   });
 
-  app.get('/api/health', (c) => c.json({ ok: true }));
+  app.get('/api/health', (c) => c.json({ ok: true, devMode }));
 
   app.get('/api/topics', (c) => c.json({ topics: learning.listTopics() }));
 
