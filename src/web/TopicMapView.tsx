@@ -65,7 +65,7 @@ export function TopicMapView({ topicId, onBack }: { topicId: string; onBack: () 
           </p>
           {notice && <p className="notice">{notice}</p>}
           {error && <p className="error">{error}</p>}
-          <RelearnByDay points={map.points} onRelearn={relearnPoints} />
+          <DayReview points={map.points} onRelearn={relearnPoints} />
           <div className="map-grid">
             {map.points.map((point) => (
               <PointCard
@@ -87,40 +87,58 @@ export function TopicMapView({ topicId, onBack }: { topicId: string; onBack: () 
 const dayOf = (iso: string) => new Date(iso).toLocaleDateString('sv-SE');
 const formatDay = (day: string) => new Date(`${day}T00:00:00`).toLocaleDateString('zh-CN', { month: 'long', day: 'numeric', weekday: 'short' });
 
-/** 按日期重新学习：选一天，把那天学过的知识点一起安排重讲 */
-function RelearnByDay({ points, onRelearn }: { points: MapPoint[]; onRelearn: (ids: string[]) => void }) {
-  // 每天学过（有作答记录）的知识点，最近的日期在前
-  const days = new Map<string, MapPoint[]>();
-  for (const point of points) {
-    for (const day of new Set(point.records.map((r) => dayOf(r.at)))) {
-      days.set(day, [...(days.get(day) ?? []), point]);
-    }
+/** 按天回看：选一天，按当时的顺序重读那天的讲解和题目；读完可把其中已学会的一起安排重讲 */
+function DayReview({ points, onRelearn }: { points: MapPoint[]; onRelearn: (ids: string[]) => void }) {
+  // 所有作答记录带上所属知识点，按时间排好，再按天分组；最近的日期在前
+  const all = points
+    .flatMap((point) => point.records.map((record) => ({ point, record })))
+    .sort((a, b) => a.record.at.localeCompare(b.record.at));
+  const days = new Map<string, typeof all>();
+  for (const entry of all) {
+    const day = dayOf(entry.record.at);
+    days.set(day, [...(days.get(day) ?? []), entry]);
   }
   const sortedDays = [...days.keys()].sort().reverse();
   const [selected, setSelected] = useState(sortedDays[0] ?? '');
+  const [reading, setReading] = useState(false);
   if (sortedDays.length === 0) return null;
 
   const day = days.has(selected) ? selected : sortedDays[0]!;
-  const dayPoints = days.get(day)!;
+  const entries = days.get(day)!;
+  const dayPoints = [...new Set(entries.map((e) => e.point))];
   const learned = dayPoints.filter(isLearned);
 
   return (
-    <div className="relearn-day">
-      <label>
-        按日期重新学习：
-        <select value={day} onChange={(e) => setSelected(e.target.value)}>
-          {sortedDays.map((d) => (
-            <option key={d} value={d}>
-              {formatDay(d)}（{days.get(d)!.length} 个知识点）
-            </option>
-          ))}
-        </select>
-      </label>
+    <div className="day-review">
+      <div className="row">
+        <label>
+          按天回看：
+          <select value={day} onChange={(e) => setSelected(e.target.value)}>
+            {sortedDays.map((d) => (
+              <option key={d} value={d}>
+                {formatDay(d)}（{new Set(days.get(d)!.map((e) => e.point)).size} 个知识点）
+              </option>
+            ))}
+          </select>
+        </label>
+        <button onClick={() => setReading(!reading)}>{reading ? '收起' : '回看这一天'}</button>
+      </div>
       <p className="muted">这一天学过：{dayPoints.map((p) => p.title).join('、')}</p>
-      {learned.length > 0 ? (
-        <button onClick={() => onRelearn(learned.map((p) => p.id))}>重新学习其中已学会的 {learned.length} 个</button>
-      ) : (
-        <p className="muted">这些知识点都还没学会，下一节微课堂本来就会重讲。</p>
+
+      {reading && (
+        <>
+          {entries.map(({ point, record }) => (
+            <RecordView key={record.attemptId} record={record} label={point.title} explanationOpen />
+          ))}
+          <div className="day-review-end">
+            {learned.length > 0 ? (
+              <button onClick={() => onRelearn(learned.map((p) => p.id))}>读完还是没把握？重新学习其中已学会的 {learned.length} 个</button>
+            ) : (
+              <p className="muted">这些知识点都还没学会，下一节微课堂本来就会重讲。</p>
+            )}
+            <button onClick={() => setReading(false)}>收起</button>
+          </div>
+        </>
       )}
     </div>
   );
@@ -150,7 +168,12 @@ function PointCard(props: { point: MapPoint; open: boolean; onToggle: () => void
             </p>
           ) : (
             point.records.map((record, i) => (
-              <RecordView key={record.attemptId} record={record} index={i} latestLesson={isLatestLesson(point.records, i)} />
+              <RecordView
+                key={record.attemptId}
+                record={record}
+                label={`第 ${i + 1} 次`}
+                explanationOpen={isLatestLesson(point.records, i)}
+              />
             ))
           )}
         </div>
@@ -165,7 +188,7 @@ function isLatestLesson(records: MapRecord[], index: number): boolean {
 }
 
 /** 一次作答的留档：讲解（如有）、题目、你的回答、批改结果、参考答案 */
-function RecordView({ record, index, latestLesson }: { record: MapRecord; index: number; latestLesson: boolean }) {
+function RecordView({ record, label, explanationOpen }: { record: MapRecord; label: string; explanationOpen: boolean }) {
   const { question, answer } = record;
   const verdict = record.correct
     ? `答对${record.selfRating ? ` · 自评${RATING_LABEL[record.selfRating]}` : ''}`
@@ -174,12 +197,12 @@ function RecordView({ record, index, latestLesson }: { record: MapRecord; index:
   return (
     <div className="record">
       <div className="record-head">
-        第 {index + 1} 次 · {formatTime(record.at)} · {record.kind === 'lesson' ? '讲解与小题' : '复习题'} ·{' '}
+        {label} · {formatTime(record.at)} · {record.kind === 'lesson' ? '讲解与小题' : '复习题'} ·{' '}
         <strong className={record.correct ? 'ok' : 'bad'}>{verdict}</strong>
       </div>
 
       {record.explanation && (
-        <details open={latestLesson}>
+        <details open={explanationOpen}>
           <summary>讲解</summary>
           <article className="explanation">
             <RichMarkdown>{record.explanation}</RichMarkdown>

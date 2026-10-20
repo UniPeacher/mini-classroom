@@ -392,16 +392,30 @@ blockquote {
   background: var(--ok-bg);
 }
 
-/* 按日期重新学习 */
-.relearn-day {
+/* 按天回看 */
+.day-review {
   padding: 12px;
   margin-bottom: 12px;
   border: 1px solid var(--border);
   border-radius: 8px;
 }
 
-.relearn-day p {
-  margin: 4px 0 8px;
+.day-review .row {
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.day-review p {
+  margin: 8px 0 0;
+}
+
+.day-review-end {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 16px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
 }
 
 select {
