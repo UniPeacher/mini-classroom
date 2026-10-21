@@ -27,8 +27,9 @@ export const knowledgePoints = sqliteTable('knowledge_points', {
   summary: text('summary').notNull(),
   // AI 给出的推荐顺序，认知顺序相同时用它排先后
   position: integer('position').notNull(),
-  // graph：骨架图谱生成的；decomposed：某个知识点反复失败时拆解出的更基础的前置知识点
-  origin: text('origin', { enum: ['graph', 'decomposed'] }).notNull().default('graph'),
+  // graph：骨架图谱生成的；decomposed：某个知识点反复失败时拆解出的更基础的前置知识点；
+  // asked：从学习时的提问里整理出、用户确认加入的知识点
+  origin: text('origin', { enum: ['graph', 'decomposed', 'asked'] }).notNull().default('graph'),
 });
 
 /**
@@ -189,5 +190,16 @@ export const cheatsheets = sqliteTable('cheatsheets', {
   scope: text('scope', { mode: 'json' }).notNull(),
   status: text('status', { enum: ['pending', 'ready', 'failed'] }).notNull().default('pending'),
   markdown: text('markdown'),
+  createdAt: timestamp('created_at').notNull(),
+});
+
+/** 学习时的提问：随时问、随时答，可从中整理出不了解的知识加入认知地图 */
+export const asks = sqliteTable('asks', {
+  id: text('id').primaryKey(),
+  sessionId: text('session_id').references(() => sessions.id),
+  // 提问时正在学的知识点
+  knowledgePointId: text('knowledge_point_id').references(() => knowledgePoints.id),
+  question: text('question').notNull(),
+  answer: text('answer').notNull(),
   createdAt: timestamp('created_at').notNull(),
 });

@@ -37,6 +37,14 @@ const AttemptBody = z.object({
 });
 const RatingBody = z.object({ selfRating: z.enum(['hard', 'good', 'easy']) });
 const AppealBody = z.object({ reason: z.string().trim().min(1, '请写明申诉理由').max(1000, '申诉理由不超过 1000 字') });
+const AskBody = z.object({ sessionId: z.string(), itemId: z.string().optional(), question: z.string().trim().min(1, '请输入问题').max(1000, '问题不超过 1000 字') });
+const AcceptBody = z.object({
+  anchorPointId: z.string(),
+  points: z
+    .array(z.object({ title: z.string().trim().min(1).max(60), summary: z.string().trim().min(1).max(300), kind: z.enum(['prerequisite', 'extension']) }))
+    .min(1, '请至少选一个知识点')
+    .max(4),
+});
 const RevisitBody = z.object({ resumeTopicIds: z.array(z.string()) });
 const RelearnBody = z.object({ knowledgePointIds: z.array(z.string()).min(1, '请选择要重新学习的知识点') });
 const ExistingBody = z.object({ text: z.string().trim().min(1, '请输入已有知识').max(100, '已有知识不超过 100 字') });
@@ -49,7 +57,7 @@ const SettingsPatch = UserSettingsSchema.partial();
 
 /** 组装 HTTP 应用；依赖由调用方注入，便于测试。 */
 export function createApp({ services, clock, devMode, frontendUrl }: AppDeps) {
-  const { learning, knowledge, placement, preferences } = services;
+  const { learning, knowledge, placement, preferences, asking } = services;
   const app = new Hono();
 
   const nowOf = (header: string | undefined) => {
@@ -110,6 +118,10 @@ export function createApp({ services, clock, devMode, frontendUrl }: AppDeps) {
   app.post('/api/attempts/:id/appeal', async (c) =>
     c.json(await learning.appealAttempt(c.req.param('id'), (await body(c, AppealBody)).reason, now(c))),
   );
+  app.post('/api/asks', async (c) => c.json(await asking.ask(await body(c, AskBody), now(c)), 201));
+  app.get('/api/sessions/:id/asks', (c) => c.json({ asks: asking.listAsks(c.req.param('id')) }));
+  app.post('/api/sessions/:id/asks/suggest', async (c) => c.json(await asking.suggest(c.req.param('id'))));
+  app.post('/api/asks/accept', async (c) => c.json(asking.accept(await body(c, AcceptBody), now(c)), 201));
   app.post('/api/revisit', async (c) => c.json(learning.answerRevisit((await body(c, RevisitBody)).resumeTopicIds, now(c))));
 
   // ---------- 认知地图、回看、重新学习 ----------

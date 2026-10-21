@@ -1,6 +1,7 @@
 import type { StructuredModel } from '../ai/gateway';
 import type { Settings } from '../settings';
 import type { Db } from '../store/db';
+import { createAsking } from './asking';
 import { createKnowledge } from './knowledge';
 import { createLearning } from './learning';
 import { createPlacement } from './placement';
@@ -20,6 +21,7 @@ export function createServices(deps: ServiceDeps) {
     knowledge: createKnowledge(deps),
     placement: createPlacement(deps),
     preferences: createPreferences(deps),
+    asking: createAsking(deps),
   };
 }
 

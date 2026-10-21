@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { type SQL, and, asc, desc, eq, gte, inArray, isNull, lt, or } from 'drizzle-orm';
 import { chunksOf } from '../domain/chunks';
+import { masteryOf } from '../domain/mastery';
 import { cognitiveEdge } from '../domain/edge';
 import { type Stage, UNLEARNED, hasLearned, relearn } from '../domain/memory';
 import type { CheatsheetScope } from '../jobs/handlers';
@@ -67,7 +68,9 @@ export function createKnowledge({ db }: KnowledgeDeps) {
             onEdge: edgeIds.has(p.id),
             // 迷雾：能新学的主题里，前置还没学会的未学知识点。主题暂停或摸底未完成时，未学的只显示为未学
             fog: state.stage === 'unlearned' && !edgeIds.has(p.id) && p.learnable !== false,
+            mastery: masteryOf(state),
             decomposed: p.decomposed ?? false,
+            origin: p.origin,
             nextReviewAt: state.card?.due ?? null,
             prerequisiteIds: p.prerequisiteIds,
             confusableIds: p.confusableIds,

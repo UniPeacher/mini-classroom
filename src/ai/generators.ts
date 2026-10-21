@@ -1,6 +1,7 @@
 import type { ExplainForm, QuestionForm } from '../domain/forms';
 import type { Stage } from '../domain/memory';
 import {
+  AnswerSchema,
   type AppealVerdict,
   AppealVerdictSchema,
   CheatsheetSchema,
@@ -10,6 +11,8 @@ import {
   DecompositionSchema,
   type Grade,
   GradeSchema,
+  type KnowledgeSuggestion,
+  KnowledgeSuggestionSchema,
   type Graph,
   GraphSchema,
   type LessonContent,
@@ -399,4 +402,75 @@ ${input.connections.length ? input.connections.map((c) => `- ${c.from} ↔ ${c.t
 - 只写给出的知识点，不扩展新内容。`,
   });
   return markdown;
+}
+
+/** 学习时提问的上下文：正在学的知识点、讲解原文、还没作答的小题 */
+export interface AskContext {
+  topicTitle: string;
+  title: string;
+  summary: string;
+  explanation: string | null;
+  /** 当前小题的题面（不含答案）；null 表示没有小题 */
+  questionText: string | null;
+  /** 小题是否已经作答：作答前不直接给出答案 */
+  answered: boolean;
+}
+
+/** 回答学习时的提问：结合正在学的内容，简明作答；小题作答前只引导、不给答案 */
+export async function answerQuestion(
+  model: StructuredModel,
+  ctx: AskContext | null,
+  input: { question: string; history: { question: string; answer: string }[] },
+): Promise<string> {
+  const context = ctx
+    ? `学习者正在学：
+学习主题：${ctx.topicTitle}
+知识点：${ctx.title}（${ctx.summary}）
+${ctx.explanation ? `正在读的讲解：\n${ctx.explanation.slice(0, 2500)}\n` : ''}${ctx.questionText ? `当前小题（${ctx.answered ? '已作答' : '还没作答'}）：\n${ctx.questionText.slice(0, 1500)}\n` : ''}`
+    : '学习者在学习过程中提问。';
+  const { answer } = await model.generate({
+    name: 'answer',
+    schema: AnswerSchema,
+    system: SYSTEM,
+    prompt: `${context}
+${input.history.length ? `之前的问答：\n${input.history.map((h) => `问：${h.question}\n答：${h.answer}`).join('\n\n')}\n` : ''}
+学习者现在问：
+"""
+${input.question}
+"""
+
+回答要求：
+- 用"你"称呼学习者，直接回答问的问题，第一句就是要点；一般 2~6 句，讲清楚就停。
+- 结合正在学的知识点和讲解来答，用学习者已经看到的名称和例子。
+- ${ctx && ctx.questionText && !ctx.answered ? '当前小题还没作答：如果问题是在问这道题的答案，不要直接给出答案或选项，而是提示思路、指出该回看讲解的哪一部分。' : '可以直接讨论小题的答案和原因。'}
+- 问题超出当前知识点时照常回答，但点明它属于另一个知识点。
+- 用 Markdown；需要时给一小段代码，或一张简单的 Mermaid 图（\`\`\`mermaid）。`,
+  });
+  return answer;
+}
+
+/** 从学习者的提问中整理出还不了解、值得单独学习的知识点（0~4 个） */
+export async function suggestKnowledge(
+  model: StructuredModel,
+  ctx: { topicTitle: string; title: string; summary: string; existingTitles: string[] },
+  asks: { question: string; answer: string }[],
+): Promise<KnowledgeSuggestion[]> {
+  const { knowledgePoints } = await model.generate({
+    name: 'knowledge_suggestion',
+    schema: KnowledgeSuggestionSchema,
+    system: SYSTEM,
+    prompt: `学习者在学「${ctx.topicTitle}」的知识点「${ctx.title}」（${ctx.summary}）时提了下面这些问题。请从中找出学习者还不了解、值得以后单独学一学的知识，整理成知识点加入他的认知地图。
+
+学习者的提问和得到的回答：
+${asks.map((a, i) => `${i + 1}. 问：${a.question}\n   答：${a.answer.slice(0, 600)}`).join('\n')}
+
+这个主题已有的知识点（不要重复）：${ctx.existingTitles.join('、')}
+
+要求：
+- 只收提问暴露出的真正不了解的知识；问题已在回答中讲透、只是一时没想起来的，不收。没有就给空数组，最多 4 个。
+- 每个知识点能单独教授、单独检验，粒度与已有知识点相当。title 简短；summary 一句话写清学会后能做什么。
+- kind：学懂「${ctx.title}」必须先补的基础为 prerequisite，相关的延伸为 extension。
+- reason：一句话说明从哪个提问看出不了解。`,
+  });
+  return knowledgePoints;
 }

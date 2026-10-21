@@ -40,23 +40,25 @@ export function saveGraph(db: Executor, topicId: string, graph: Graph, now: Date
 }
 
 /**
- * 拆解：把更基础的前置知识点挂进知识图谱，作为原知识点的前置，并初始化为未学。
- * 它们排在原知识点的推荐位置上，认知边缘会把拆解出的知识点排在前面先教。
+ * 把新知识点挂进知识图谱并初始化为未学，排在锚点知识点的推荐位置上。
+ * prerequisite 为 true 的作为锚点的前置（学懂锚点之前要先学它），否则只作为同主题的知识点。
+ * 用于拆解（更基础的前置）和从提问中整理出的知识。新知识点没有指向它的前置，不会形成环。
  */
-export function addDecomposedPoints(
+export function addPoints(
   db: Executor,
-  parent: { id: string; topicId: string; position: number },
-  points: { title: string; summary: string }[],
+  anchor: { id: string; topicId: string; position: number },
+  points: { title: string; summary: string; prerequisite: boolean }[],
+  origin: 'decomposed' | 'asked',
   now: Date,
 ): string[] {
   return db.transaction((tx) =>
     points.map((p) => {
       const id = randomUUID();
       tx.insert(knowledgePoints)
-        .values({ id, topicId: parent.topicId, title: p.title, summary: p.summary, position: parent.position, origin: 'decomposed' })
+        .values({ id, topicId: anchor.topicId, title: p.title, summary: p.summary, position: anchor.position, origin })
         .run();
       tx.insert(memoryStates).values({ knowledgePointId: id, stage: 'unlearned', updatedAt: now }).run();
-      tx.insert(relations).values({ fromId: id, toId: parent.id, type: 'prerequisite' }).run();
+      if (p.prerequisite) tx.insert(relations).values({ fromId: id, toId: anchor.id, type: 'prerequisite' }).run();
       return id;
     }),
   );
@@ -71,6 +73,8 @@ export interface PointInfo extends GraphPoint {
   confusableIds: string[];
   /** 组成关系中，它是哪些知识点的一部分 */
   partOfIds: string[];
+  /** 来源：骨架图谱、拆解、从提问中加入 */
+  origin: 'graph' | 'decomposed' | 'asked';
 }
 
 /**
@@ -92,6 +96,7 @@ export function loadPoints(db: Executor): PointInfo[] {
     topicTitle: topic.title,
     learnable: topic.status === 'active' && (topic.placementStatus === 'done' || topic.placementStatus === 'skipped'),
     decomposed: point.origin === 'decomposed',
+    origin: point.origin,
     title: point.title,
     summary: point.summary,
     prerequisiteIds: allRelations.filter((r) => r.type === 'prerequisite' && r.toId === point.id).map((r) => r.fromId),

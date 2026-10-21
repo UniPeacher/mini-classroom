@@ -111,6 +111,17 @@ export function createFakeModel(options: FakeModelOptions = {}) {
         return [{ knowledgePoints: [{ title: '更基础的知识点', summary: '先学会它' }] }];
       case 'placement':
         return [placementPlan(prompt)];
+      case 'answer':
+        return [{ answer: prompt.includes('还没作答') && prompt.includes('答案是什么') ? '先回看讲解的第二段，想想它解决了什么问题。' : '这是对你问题的回答。' }];
+      case 'knowledge_suggestion':
+        return [
+          {
+            knowledgePoints: [
+              { title: '类型守卫', summary: '能用 typeof、instanceof 写出类型守卫', kind: 'prerequisite', reason: '问了怎么判断类型' },
+              { title: '联合类型', summary: '重复的知识点应被过滤', kind: 'extension', reason: '测试去重' },
+            ],
+          },
+        ];
       case 'cheatsheet':
         return [{ markdown: '# 速查表\n\n## 联合类型\n用 | 表示多种可能。' }];
       default:

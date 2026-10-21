@@ -190,6 +190,27 @@ export function placementSchema(probeIds: string[]) {
 
 export type PlacementPlan = z.infer<ReturnType<typeof placementSchema>>;
 
+/** 学习时提问的回答 */
+export const AnswerSchema = z.object({ answer: z.string() });
+
+/** 从提问中整理出的、学习者还不了解的知识 */
+export const KnowledgeSuggestionSchema = z
+  .object({
+    knowledgePoints: z.array(
+      z.object({
+        title: z.string(),
+        summary: z.string(),
+        // prerequisite：学懂当前知识点必须先补的基础；extension：相关的延伸知识
+        kind: z.enum(['prerequisite', 'extension']),
+        // 从哪个提问看出不了解，一句话
+        reason: z.string(),
+      }),
+    ),
+  })
+  .refine((s) => s.knowledgePoints.length <= 4, '最多整理出 4 个知识点');
+
+export type KnowledgeSuggestion = z.infer<typeof KnowledgeSuggestionSchema>['knowledgePoints'][number];
+
 /** 速查表 */
 export const CheatsheetSchema = z.object({ markdown: z.string() });
 

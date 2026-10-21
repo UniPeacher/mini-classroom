@@ -8,7 +8,7 @@ import type { Settings } from '../settings';
 import type { LessonContent } from '../shared/content';
 import type { Db } from '../store/db';
 import {
-  addDecomposedPoints,
+  addPoints,
   getTopic,
   loadExistingKnowledge,
   loadPoints,
@@ -148,7 +148,7 @@ export function createHandlers(deps: HandlerDeps): JobHandlers {
             ...contextOf(point, byId, { state }),
             existingTitles: points.filter((p) => p.topicId === point.topicId).map((p) => p.title),
           });
-          addDecomposedPoints(db, point, result.knowledgePoints, clock());
+          addPoints(db, point, result.knowledgePoints.map((k) => ({ ...k, prerequisite: true })), 'decomposed', clock());
         } catch (error) {
           // 结构始终不合法：放弃拆解，知识点照常按原方式教
           if (!(error instanceof AiOutputError)) throw error;
