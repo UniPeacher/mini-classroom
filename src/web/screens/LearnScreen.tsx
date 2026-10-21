@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { type FinishResult, type Session, type SessionItem, api } from '../api';
 import { AskPanel, type AskPanelHandle } from '../components/AskPanel';
+import { SelectionToAsk } from '../components/SelectionToAsk';
 import { AnswerArea, type Draft, QuestionStem, canSubmit, initialDraft } from '../components/Questions';
 import { ERROR_LABEL, OPTION_LETTERS, PURPOSE_LABEL } from '../labels';
 import { RichMarkdown } from '../RichMarkdown';
@@ -69,7 +70,8 @@ function SessionFlow(props: { session: Session; notice?: string; onFinished: (re
 
   return (
     <div className="grid top">
-      <div className="span-8">
+      <SelectionToAsk scope=".learn-article" onQuote={(text) => askRef.current?.quote(text)} />
+      <div className="span-8 learn-article">
         <div className="progress-steps" aria-hidden="true">
           {session.items.map((it, i) => (
             <span key={it.id} className={i === index ? 'current' : results[it.id] && !results[it.id]!.needsRating ? 'done' : ''} />
@@ -118,7 +120,7 @@ function SessionFlow(props: { session: Session; notice?: string; onFinished: (re
             </button>
           </div>
         </section>
-        <AskPanel ref={askRef} sessionId={session.id} itemId={item.id} itemTitle={item.title} />
+        <AskPanel ref={askRef} scope={{ sessionId: session.id }} itemId={item.id} contextTitle={item.title} />
       </aside>
     </div>
   );

@@ -1,7 +1,9 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { api } from '../api';
+import { AskPanel, type AskPanelHandle } from '../components/AskPanel';
 import { Mark } from '../components/Icon';
 import { RecordView } from '../components/RecordView';
+import { SelectionToAsk } from '../components/SelectionToAsk';
 import { useResource } from '../hooks';
 import { STAGE_LABEL, formatDay } from '../labels';
 import { routeHash } from '../router';
@@ -12,6 +14,9 @@ const LEARNED = new Set(['inferred', 'recall', 'apply', 'retain']);
 export function DayReviewPage({ day, topicId }: { day: string; topicId?: string }) {
   const review = useResource(() => api.dayReview(day, topicId), [day, topicId]);
   const [message, setMessage] = useState('');
+  // 提问围绕哪个知识点：选中内容所在的那条记录的知识点，默认第一个
+  const [askPointId, setAskPointId] = useState<string | null>(null);
+  const askRef = useRef<AskPanelHandle>(null);
   const [error, setError] = useState('');
 
   // 标签页标题写明回看哪一天
@@ -59,9 +64,19 @@ export function DayReviewPage({ day, topicId }: { day: string; topicId?: string 
         {data && data.entries.length === 0 && <div className="empty">这一天没有学习记录。</div>}
         {data && data.entries.length > 0 && (
           <div className="grid top">
-            <article className="span-8">
+            <SelectionToAsk
+              scope=".day-records"
+              onQuote={(text, from) => {
+                const id = from.closest<HTMLElement>('[data-point-id]')?.dataset.pointId;
+                if (id) setAskPointId(id);
+                askRef.current?.quote(text);
+              }}
+            />
+            <article className="span-8 day-records">
               {data.entries.map(({ topicTitle, point, record }) => (
-                <RecordView key={record.attemptId} record={record} label={allTopics ? `${topicTitle} · ${point.title}` : point.title} explanationOpen />
+                <div key={record.attemptId} data-point-id={point.id}>
+                  <RecordView record={record} label={allTopics ? `${topicTitle} · ${point.title}` : point.title} explanationOpen />
+                </div>
               ))}
             </article>
             <aside className="span-4 rail">
@@ -93,6 +108,13 @@ export function DayReviewPage({ day, topicId }: { day: string; topicId?: string 
                 {message && <p className="notice ok" style={{ marginTop: 12 }}>{message}</p>}
                 {error && <p className="error-text" style={{ marginTop: 12 }}>{error}</p>}
               </section>
+              {points.length > 0 && (
+                <AskPanel
+                  ref={askRef}
+                  scope={{ pointId: askPointId ?? points[0]!.id }}
+                  contextTitle={points.find((p) => p.id === (askPointId ?? points[0]!.id))?.title ?? ''}
+                />
+              )}
             </aside>
           </div>
         )}

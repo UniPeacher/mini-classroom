@@ -1,7 +1,9 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { type CognitiveMap, type MapPoint, type MapTopic, api } from '../api';
+import { AskPanel, type AskPanelHandle } from '../components/AskPanel';
 import { Icon } from '../components/Icon';
 import { RecordView } from '../components/RecordView';
+import { SelectionToAsk } from '../components/SelectionToAsk';
 import { StageLadder, StageLegend } from '../components/StageLadder';
 import { useResource } from '../hooks';
 import { masteryBarWidth, masteryHue } from '../../domain/mastery';
@@ -250,6 +252,7 @@ function PointPanel({ pointId, map, onChanged }: { pointId: string; map: Cogniti
   const byId = new Map(map.points.map((p) => [p.id, p]));
   const links = map.connections.filter((c) => c.fromPointId === pointId || c.toPointId === pointId);
   const lastLesson = detail.data ? detail.data.records.map((r) => r.kind).lastIndexOf('lesson') : -1;
+  const askRef = useRef<AskPanelHandle>(null);
 
   async function relearn() {
     if (!window.confirm('重新学习会把这个知识点退回"理解"阶段：下一节微课堂换一种讲法重讲，答对后复习安排从头开始。确定吗？')) return;
@@ -265,7 +268,9 @@ function PointPanel({ pointId, map, onChanged }: { pointId: string; map: Cogniti
   }
 
   return (
-    <section className="panel white" aria-labelledby="point-title">
+    <>
+    <SelectionToAsk scope=".point-panel" onQuote={(text) => askRef.current?.quote(text)} />
+    <section className="panel white point-panel" aria-labelledby="point-title">
       <a className="back-link" href={routeHash({ name: 'map' })}>
         <Icon name="back" />
         收起
@@ -333,6 +338,8 @@ function PointPanel({ pointId, map, onChanged }: { pointId: string; map: Cogniti
       )}
       {detail.error && <p className="error-text">{detail.error}</p>}
     </section>
+    <AskPanel ref={askRef} scope={{ pointId }} contextTitle={point?.title ?? detail.data?.title ?? ''} />
+    </>
   );
 }
 

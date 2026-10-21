@@ -306,6 +306,25 @@ pre, code { font-family: var(--font-code); }
 .ask-a { font-size: 14px; line-height: 1.65; margin-top: 6px; }
 .ask-turn { display: grid; }
 .add-to-map { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--border); }
+.ask-threads { height: 34px; margin-bottom: 12px; font-size: 13px; }
+.ask-quote { justify-self: end; max-width: 92%; margin: 0 0 4px; padding: 4px 10px; border-left: 3px solid var(--stage-recall); color: var(--muted); font-size: 12px; line-height: 18px; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+.quote-chip { display: flex; align-items: flex-start; gap: 8px; margin-bottom: 8px; padding: 6px 4px 6px 10px; border-left: 3px solid var(--stage-recall); background: var(--ground); border-radius: 0 10px 10px 0; }
+.quote-chip .quote-text { flex: 1; min-width: 0; font-size: 13px; line-height: 18px; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+.quote-chip .btn { height: 24px; padding: 0 8px; }
+.suggest-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px; }
+.suggest-list { list-style: none; padding: 0; margin: 0; display: grid; gap: 8px; }
+.suggest-item { display: flex; align-items: center; gap: 10px; width: 100%; padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius-inner); background: var(--ground); text-align: left; font: inherit; color: inherit; cursor: pointer; transition: border-color var(--t-hover) ease; }
+.suggest-item:hover:not(:disabled) { border-color: var(--text); }
+.suggest-item:disabled { cursor: default; }
+.suggest-item.added { background: var(--pill-positive-bg); border-color: #b7ebc6; }
+.suggest-main { flex: 1; min-width: 0; display: grid; gap: 2px; }
+.suggest-title { font-weight: 500; }
+.suggest-action { flex: none; font-weight: 500; font-size: 13px; }
+.suggest-item.added .suggest-action { color: var(--positive); }
+.faint { color: var(--faint); }
+/* 选中文字后浮出的提示：真正浮在内容上，所以有阴影 */
+.selection-ask { position: fixed; z-index: 40; transform: translate(-50%, calc(-100% - 8px)); height: 32px; padding: 0 12px; border: 0; border-radius: 999px; background: var(--text); color: var(--primary-ink); font: inherit; font-size: 13px; font-weight: 500; cursor: pointer; box-shadow: 0 4px 14px rgba(0, 0, 0, 0.18); /* taste-skill-ignore：浮在内容上的提示 */ }
+.selection-ask.below { transform: translate(-50%, 8px); }
 .rail-list { display: grid; gap: 2px; }
 .rail-item { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 10px; color: var(--muted); }
 .rail-item.current { background: var(--ground); color: var(--text); }
@@ -340,6 +359,8 @@ pre, code { font-family: var(--font-code); }
 .plain-sheet { max-width: 1148px; margin: 0 auto; padding: 24px 24px 64px; }
 .record { padding: 20px 0; border-top: 1px solid var(--rule); }
 .record:first-child { border-top: 0; padding-top: 0; }
+/* 回看页每条记录外包了一层（标出所属知识点），记录之间照样有分隔 */
+.day-records > div + div > .record { border-top: 1px solid var(--rule); padding-top: 20px; }
 .record-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; color: var(--muted); margin-bottom: 10px; }
 .record-head strong { color: var(--text); font-weight: 600; }
 

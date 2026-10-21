@@ -35,7 +35,8 @@ export type PlacementState = Jsonify<ReturnType<PlacementService['status']>>;
 export type SettingsView = Jsonify<ReturnType<Preferences['getSettings']>>;
 export type UserSettings = SettingsView['settings'];
 export type Today = Jsonify<ReturnType<Preferences['today']>>;
-export type Ask = Jsonify<ReturnType<Asking['listAsks']>[number]>;
+export type AskThread = Jsonify<ReturnType<Asking['listThreads']>[number]>;
+export type Ask = AskThread['asks'][number];
 export type AskSuggestions = Jsonify<Awaited<ReturnType<Asking['suggest']>>>;
 export type KnowledgeSuggestion = AskSuggestions['suggestions'][number];
 export type { Answer, Stage };
@@ -115,9 +116,11 @@ export const api = {
   finish: (sessionId: string) => request<FinishResult>('POST', `/api/sessions/${sessionId}/finish`),
   answerRevisit: (resumeTopicIds: string[]) => request<{ ok: boolean }>('POST', '/api/revisit', { resumeTopicIds }),
 
-  ask: (sessionId: string, question: string, itemId?: string) => request<Ask>('POST', '/api/asks', { sessionId, itemId, question }),
-  asks: (sessionId: string) => request<{ asks: Ask[] }>('GET', `/api/sessions/${sessionId}/asks`),
-  suggestKnowledge: (sessionId: string) => request<AskSuggestions>('POST', `/api/sessions/${sessionId}/asks/suggest`),
+  askThreads: (scope: { sessionId?: string; pointId?: string }) =>
+    request<{ threads: AskThread[] }>('GET', `/api/ask-threads?${query(scope)}`),
+  createAskThread: (scope: { sessionId?: string; pointId?: string }) => request<AskThread>('POST', '/api/ask-threads', scope),
+  ask: (input: { threadId: string; question: string; itemId?: string; pointId?: string; quote?: string }) => request<Ask>('POST', '/api/asks', input),
+  suggestKnowledge: (threadId: string) => request<AskSuggestions>('POST', `/api/ask-threads/${threadId}/suggest`),
   acceptKnowledge: (anchorPointId: string, points: KnowledgeSuggestion[]) =>
     request<{ added: number; skipped: number; topicId: string }>('POST', '/api/asks/accept', { anchorPointId, points }),
 
