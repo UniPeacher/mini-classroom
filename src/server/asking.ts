@@ -173,7 +173,7 @@ export type Asking = ReturnType<typeof createAsking>;
 function questionText(question: Question): string {
   switch (question.type) {
     case 'mcq':
-      return `${question.stem}\n${question.options.map((o, i) => `${String.fromCharCode(65 + i)}. ${o.text}`).join('\n')}`;
+      return `${question.stem}\n${question.material ?? ''}\n${question.options.map((o, i) => `${String.fromCharCode(65 + i)}. ${o.text}`).join('\n')}`;
     case 'pick_line':
       return `${question.prompt}\n${question.lines.map((l, i) => `${i + 1}  ${l}`).join('\n')}`;
     case 'complete':
@@ -181,7 +181,7 @@ function questionText(question: Question): string {
     case 'fix':
       return `${question.prompt}\n${question.flawed}`;
     case 'short_answer':
-      return question.prompt;
+      return `${question.prompt}\n${question.material ?? ''}`;
   }
 }
 

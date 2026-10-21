@@ -94,6 +94,10 @@ const EXPLAIN_GUIDE: Record<ExplainForm, string> = {
 
 const OPTION_LETTERS = ['A', 'B', 'C', 'D'] as const;
 
+/** 题目材料：题干要看的代码或情境必须真的给出 */
+const MATERIAL_RULE =
+  '作答要看的代码或情境放在 material 里（Markdown，代码放在代码块中），stem/prompt 只写要回答的问题；不需要材料时 material 为 null。题干写了"下面的代码""以下情境"，material 就必须给出这段内容。页面会另外提供"不知道"选项，你不要写。';
+
 /**
  * 题目形式说明。选择题、点选错误行的正确位置由代码随机决定再告诉模型——
  * 让模型自己"随机放"并不可靠，实测会集中在同一个位置。
@@ -103,7 +107,7 @@ function questionGuide(form: QuestionForm, random: () => number): string {
     'referenceAnswer 给出一个简洁的正确答案（只作参考，同一道题允许有多种正确答案）；keyPoints 列出 1~5 个判定对错的关键要点，每个要点一句话。';
   switch (form) {
     case 'short_answer':
-      return `简答题：要求学习者用自己的话解释，或写一小段代码/表达式，2 分钟内能答完。prompt 一句话写清要回答什么、答到什么程度。${openRules}`;
+      return `简答题：要求学习者用自己的话解释，或写一小段代码/表达式，2 分钟内能答完。prompt 一句话写清要回答什么、答到什么程度。${MATERIAL_RULE}${openRules}`;
     case 'pick_line': {
       const answerIndex = Math.floor(random() * 4);
       return `点选错误行：给出 5~10 行代码或推理步骤，其中恰好一行有错，有错的是第 ${answerIndex + 1} 行（answerIndex 为 ${answerIndex}）。lines 每项一行，不带行号；language 是代码语言（如 "ts"），不是代码时为 null。prompt 一句话说明这段代码或步骤要做什么。错误要是这个知识点上真实常见的错误，其余各行都必须正确。explanation 先说第 ${answerIndex + 1} 行错在哪、正确写法是什么，再一句话说明为什么其他行没问题。`;
@@ -114,7 +118,7 @@ function questionGuide(form: QuestionForm, random: () => number): string {
       return `修正：给出一段接近真实工作的、有问题的代码或做法（flawed），问题正好出在这个知识点上，乍看不容易发现。prompt 说明它本来要实现什么、现在出了什么现象；language 是代码语言，不是代码时为 null。referenceAnswer 是修正后的版本；keyPoints 写判定修正是否到位的要点。`;
     case 'mcq': {
       const answerIndex = Math.floor(random() * OPTION_LETTERS.length);
-      return `单选题：4 个选项，只有 1 个正确，正确选项放在第 ${answerIndex + 1} 个（字母 ${OPTION_LETTERS[answerIndex]}，answerIndex 为 ${answerIndex}）。题干一句话问清楚要判断什么；选项长度相近、互不重叠。每个错误选项都要代表一种真实存在的误解，并在 misconception 中用一句话写明这种误解；如果存在易混知识点，优先用它来构造干扰项。正确选项的 misconception 为 null。explanation 第一句说正确选项为什么对，再用一句话分别说明每个错误选项错在哪；提到选项时用页面显示的字母 A、B、C、D，不用数字序号。`;
+      return `单选题：${MATERIAL_RULE}4 个选项，只有 1 个正确，正确选项放在第 ${answerIndex + 1} 个（字母 ${OPTION_LETTERS[answerIndex]}，answerIndex 为 ${answerIndex}）。题干一句话问清楚要判断什么；选项长度相近、互不重叠。每个错误选项都要代表一种真实存在的误解，并在 misconception 中用一句话写明这种误解；如果存在易混知识点，优先用它来构造干扰项。正确选项的 misconception 为 null。explanation 第一句说正确选项为什么对，再用一句话分别说明每个错误选项错在哪；提到选项时用页面显示的字母 A、B、C、D，不用数字序号。`;
     }
   }
 }
@@ -195,7 +199,7 @@ function describeOpenQuestion(question: OpenQuestion): string {
   const fence = (language: string | null, body: string) => `\`\`\`${language ?? ''}\n${body}\n\`\`\``;
   if (question.type === 'complete') return `补全题：${question.prompt}\n带空缺的模板：\n${fence(question.language, question.template)}`;
   if (question.type === 'fix') return `修正题：${question.prompt}\n有问题的版本：\n${fence(question.language, question.flawed)}`;
-  return `简答题：${question.prompt}`;
+  return `简答题：${question.prompt}${question.material ? `\n题目材料：\n${question.material}` : ''}`;
 }
 
 const FEEDBACK_RULES = `- feedback：用"你"称呼学习者，2~4 句话，按以下要求写：
@@ -361,6 +365,7 @@ ${input.points.map((p) => `${p.id}：${p.title} —— ${p.summary}`).join('\n')
 2. likelyKnownIds：根据背景自述，从下面的候选知识点中挑出学习者很可能已经会的（只填 id），作为摸底的起点；判断不了就给空数组。
 3. probes：为下面每个候选知识点各出一道单选题，检验是否真的会。题目要能区分"真会"和"听说过"，不考冷门细节。
    - 每题 4 个选项，只有 1 个正确，正确选项放在下面为每题指定的位置。题干一句话问清楚要判断什么；选项长度相近、互不重叠。
+   - ${MATERIAL_RULE}
    - 每个错误选项代表一种真实存在的误解，在 misconception 中用一句话写明；正确选项的 misconception 为 null。
    - explanation 第一句说正确选项为什么对；提到选项时用字母 A、B、C、D。
    - 页面会另外加一个"不知道"选项，你不要写。

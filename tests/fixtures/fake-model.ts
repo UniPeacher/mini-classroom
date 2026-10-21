@@ -19,6 +19,7 @@ export const GRAPH: Graph = {
 export const MCQ: Mcq = {
   type: 'mcq',
   stem: '哪项正确？',
+  material: null,
   options: [
     { text: '错误选项', misconception: '一种误解' },
     { text: '正确选项', misconception: null },
@@ -31,6 +32,7 @@ export const MCQ: Mcq = {
 export const SHORT: ShortAnswer = {
   type: 'short_answer',
   prompt: '用自己的话解释',
+  material: null,
   referenceAnswer: '参考答案',
   keyPoints: ['要点一'],
 };

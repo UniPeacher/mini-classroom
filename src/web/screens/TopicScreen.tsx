@@ -3,6 +3,7 @@ import { type PlacementState, api } from '../api';
 import { OPTION_LETTERS, PRIORITY_LABEL, formatDay } from '../labels';
 import { usePolling, useResource } from '../hooks';
 import { openReview } from '../router';
+import { RichMarkdown } from '../RichMarkdown';
 import { TopicSection } from './MapScreen';
 
 const UNKNOWN = -1;
@@ -182,7 +183,12 @@ function PlacementPanel({ topicId, state, onChanged }: { topicId: string; state:
             知识点：{view.question.title}
           </p>
           <div className="question-stem reading">
-            <p>{view.question.stem}</p>
+            <RichMarkdown>{view.question.stem}</RichMarkdown>
+            {view.question.material && (
+              <div className="question-material">
+                <RichMarkdown>{view.question.material}</RichMarkdown>
+              </div>
+            )}
           </div>
           <div className="options">
             {view.question.options.map((option, i) => (

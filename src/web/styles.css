@@ -276,6 +276,10 @@ pre, code { font-family: var(--font-code); }
 .option .option-text { min-width: 0; flex: 1; }
 .option .option-text p { margin: 0; }
 .option.correct { border-color: var(--positive); background: var(--pill-positive-bg); }
+/* "不知道"与正式选项分开一点，样式更轻，不和答案抢注意力 */
+.option.unknown { margin-top: 4px; border-style: dashed; color: var(--muted); }
+.option.unknown[aria-pressed="true"], .option.chosen-unknown { border-style: solid; color: var(--text); }
+.question-material { margin-top: 10px; }
 .option.wrong { border-color: var(--negative); background: var(--pill-negative-bg); }
 .code-lines { border: 1px solid var(--border); border-radius: 12px; overflow: hidden; font-family: var(--font-code); font-size: 13px; line-height: 20px; }
 .code-line { position: relative; display: flex; width: 100%; padding: 0; border: 0; background: #f8f9f7; text-align: left; cursor: pointer; color: inherit; font: inherit; }

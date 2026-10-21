@@ -9,9 +9,9 @@ type FullQuestion = NonNullable<LearningRecord['question']>;
 function toHidden(question: FullQuestion): HiddenQuestion {
   switch (question.type) {
     case 'mcq':
-      return { type: 'mcq', stem: question.stem, options: question.options.map((o) => o.text) };
+      return { type: 'mcq', stem: question.stem, material: question.material ?? null, options: question.options.map((o) => o.text) };
     case 'short_answer':
-      return { type: 'short_answer', prompt: question.prompt };
+      return { type: 'short_answer', prompt: question.prompt, material: question.material ?? null };
     case 'pick_line':
       return { type: 'pick_line', prompt: question.prompt, language: question.language, lines: question.lines };
     case 'complete':
@@ -91,7 +91,10 @@ export function RecordView({ record, label, explanationOpen }: { record: Learnin
               </pre>
             </>
           ) : (
-            <AnswerArea question={toHidden(question)} draft={{ choice: chosen, text: '' }} onChange={() => undefined} marks={{ answerIndex, chosen }} disabled />
+            <>
+              <AnswerArea question={toHidden(question)} draft={{ choice: chosen, text: '' }} onChange={() => undefined} marks={{ answerIndex, chosen }} disabled />
+              {chosen === -1 && <p className="muted small" style={{ marginTop: 6 }}>当时选了"不知道"</p>}
+            </>
           )}
         </div>
       )}

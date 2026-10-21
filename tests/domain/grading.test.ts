@@ -1,10 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { gradeMcq, gradePickLine } from '../../src/domain/grading';
+import { UNKNOWN_CHOICE, gradeMcq, gradePickLine } from '../../src/domain/grading';
 import type { Mcq } from '../../src/shared/content';
 
 const question: Mcq = {
   type: 'mcq',
   stem: '关于 unknown，哪项正确？',
+  material: null,
   options: [
     { text: '可以直接调用它的方法', misconception: '把 unknown 当成 any' },
     { text: '使用前需要先收窄类型', misconception: null },
@@ -58,5 +59,19 @@ describe('点选错误行判分', () => {
 
   it('序号越界（没有选）判为遗忘', () => {
     expect(gradePickLine(pick, -1)).toMatchObject({ correct: false, errorType: 'forgetting' });
+  });
+});
+
+describe('选"不知道"', () => {
+  it('选择题选"不知道"：判为答错、记为遗忘（不算误解），照样给出解析', () => {
+    const grade = gradeMcq(question, UNKNOWN_CHOICE);
+    expect(grade).toMatchObject({ correct: false, errorType: 'forgetting' });
+    expect(grade.feedback).toContain('不知道');
+    expect(grade.feedback).toContain(question.explanation);
+  });
+
+  it('点选错误行选"不知道"：同样记为遗忘', () => {
+    const pick = { type: 'pick_line' as const, prompt: '找错', language: null, lines: ['a', 'b', 'c', 'd'], answerIndex: 2, explanation: '第 3 行错' };
+    expect(gradePickLine(pick, UNKNOWN_CHOICE)).toMatchObject({ correct: false, errorType: 'forgetting' });
   });
 });

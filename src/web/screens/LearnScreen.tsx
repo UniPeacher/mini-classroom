@@ -207,6 +207,8 @@ function ItemView(props: {
       }
       const n = Number(event.key);
       if (!typing && Number.isInteger(n) && n >= 1 && n <= choiceCount) setDraft((d) => ({ ...d, choice: n - 1 }));
+      // 0 是"不知道"
+      if (!typing && event.key === '0' && choiceCount > 0) setDraft((d) => ({ ...d, choice: -1 }));
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
@@ -281,13 +283,13 @@ function ItemView(props: {
           <button type="button" className="btn primary" onClick={submit} disabled={!submittable || submitting}>
             {submitting ? (question?.type === 'mcq' || question?.type === 'pick_line' ? '提交中…' : 'AI 批改中…') : '提交'}
           </button>
-          <span className="muted small">{choiceCount > 0 ? `键盘：1–${choiceCount} 选择，Enter 提交` : '⌘/Ctrl + Enter 提交'}</span>
+          <span className="muted small">{choiceCount > 0 ? `键盘：1–${choiceCount} 选择，0 不知道，Enter 提交` : '⌘/Ctrl + Enter 提交'}</span>
           {error && <span className="error-text">{error}</span>}
         </div>
       )}
 
       {result && (
-        <ResultView item={item} result={result} onResult={onResult} onNext={onNext} isLast={isLast} busy={busy} />
+        <ResultView item={item} result={result} unknown={draft.choice === -1} onResult={onResult} onNext={onNext} isLast={isLast} busy={busy} />
       )}
     </article>
   );
@@ -387,8 +389,17 @@ function Steps({ steps, onDone }: { steps: string[]; onDone: () => void }) {
 }
 
 /** 批改结果：判定、反馈、参考答案；答对后自评；判错可申诉 */
-function ResultView(props: { item: SessionItem; result: Result; onResult: (r: Result) => void; onNext: () => void; isLast: boolean; busy: boolean }) {
-  const { item, result, onResult, onNext, isLast, busy } = props;
+function ResultView(props: {
+  item: SessionItem;
+  result: Result;
+  /** 选的是"不知道" */
+  unknown: boolean;
+  onResult: (r: Result) => void;
+  onNext: () => void;
+  isLast: boolean;
+  busy: boolean;
+}) {
+  const { item, result, unknown, onResult, onNext, isLast, busy } = props;
   const [appealing, setAppealing] = useState(false);
   const [reason, setReason] = useState('');
   const [sending, setSending] = useState(false);
@@ -430,7 +441,9 @@ function ResultView(props: { item: SessionItem; result: Result; onResult: (r: Re
       ? '这道题已作废，不计入记忆'
       : result.correct
         ? '答对了'
-        : `答错了 · ${result.errorType ? ERROR_LABEL[result.errorType] : ''}`;
+        : unknown
+          ? '不知道也没关系，看看解析'
+          : `答错了 · ${result.errorType ? ERROR_LABEL[result.errorType] : ''}`;
 
   // 结果出现时滚进视线，注意力落在判定上
   const resultRef = useRef<HTMLDivElement>(null);
@@ -459,7 +472,7 @@ function ResultView(props: { item: SessionItem; result: Result; onResult: (r: Re
 
   return (
     <div className="result" role="status" ref={resultRef}>
-      <div className={`result-verdict ${result.correct ? 'ok' : result.voided ? '' : 'bad'}`}>{verdict}</div>
+      <div className={`result-verdict ${result.correct ? 'ok' : result.voided || unknown ? '' : 'bad'}`}>{verdict}</div>
       {result.feedback && (
         <div className="reading" style={{ fontSize: 15 }}>
           <RichMarkdown>{result.feedback}</RichMarkdown>
@@ -523,7 +536,7 @@ function ResultView(props: { item: SessionItem; result: Result; onResult: (r: Re
         </div>
       )}
 
-      {!isConnection && !result.correct && !result.voided && !result.appeal && !appealing && (
+      {!isConnection && !unknown && !result.correct && !result.voided && !result.appeal && !appealing && (
         <button type="button" className="secondary-link" onClick={() => setAppealing(true)}>
           觉得判错了？申诉
         </button>

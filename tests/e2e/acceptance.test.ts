@@ -104,6 +104,13 @@ describe('学习流程的边界情况', () => {
     expect((await call('POST', '/api/attempts', body)).status).toBe(409);
   });
 
+  it('选"不知道"：判为答错、记为遗忘（不算误解），可以照常看解析', async () => {
+    const { call, session } = await started();
+    const res = await call('POST', '/api/attempts', { sessionId: session.id, itemId: session.items[0].id, answer: { choice: -1 } });
+    expect(res.body).toMatchObject({ correct: false, errorType: 'forgetting', needsRating: false });
+    expect(res.body.reveal).toHaveProperty('answerIndex');
+  });
+
   it('答错时不能自评', async () => {
     const { call, session } = await started();
     const wrong = await call('POST', '/api/attempts', { sessionId: session.id, itemId: session.items[0].id, answer: { choice: 0 } });

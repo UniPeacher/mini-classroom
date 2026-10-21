@@ -42,9 +42,9 @@ export function questionOf(item: ItemRow): Question | null {
 export function hideAnswer(question: Question) {
   switch (question.type) {
     case 'mcq':
-      return { type: question.type, stem: question.stem, options: question.options.map((o) => o.text) };
+      return { type: question.type, stem: question.stem, material: question.material ?? null, options: question.options.map((o) => o.text) };
     case 'short_answer':
-      return { type: question.type, prompt: question.prompt };
+      return { type: question.type, prompt: question.prompt, material: question.material ?? null };
     case 'pick_line':
       return { type: question.type, prompt: question.prompt, language: question.language, lines: question.lines };
     case 'complete':

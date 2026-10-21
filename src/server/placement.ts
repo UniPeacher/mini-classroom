@@ -70,14 +70,14 @@ export function createPlacement({ db }: PlacementDeps) {
       background: placement?.background ?? null,
       answered: answers.length,
       maxQuestions: MAX_PLACEMENT_QUESTIONS,
-      question: null as { pointId: string; title: string; stem: string; options: string[] } | null,
+      question: null as { pointId: string; title: string; stem: string; material: string | null; options: string[] } | null,
       summary: null as { correct: number; inferred: number; unknown: number } | null,
     };
     if (topic.placementStatus === 'testing' && placement) {
       const next = currentProbe(topicId);
       if (next) {
         const title = loadPoints(db).find((p) => p.id === next.pointId)?.title ?? '';
-        base.question = { pointId: next.pointId, title, stem: next.question.stem, options: next.question.options.map((o) => o.text) };
+        base.question = { pointId: next.pointId, title, stem: next.question.stem, material: next.question.material ?? null, options: next.question.options.map((o) => o.text) };
       }
     }
     if (topic.placementStatus === 'done') base.summary = summarize(topicId, answers);

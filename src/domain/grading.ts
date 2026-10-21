@@ -1,8 +1,17 @@
 import type { Grade, Mcq, PickLine } from '../shared/content';
 
-/** 选择题按规则判分：选中带误解标注的干扰项视为误解，否则视为遗忘。 */
+/** 选"不知道"时提交的序号 */
+export const UNKNOWN_CHOICE = -1;
+
+/** 选"不知道"：如实记为遗忘（不算误解），照样给出解析 */
+function unknownGrade(explanation: string): Grade {
+  return { correct: false, errorType: 'forgetting', feedback: `你选了"不知道"，下次会换一种方式再考。\n\n${explanation}` };
+}
+
+/** 选择题按规则判分：选中带误解标注的干扰项视为误解，否则视为遗忘；选"不知道"视为遗忘。 */
 export function gradeMcq(question: Mcq, chosenIndex: number): Grade {
   if (chosenIndex === question.answerIndex) return { correct: true, errorType: null, feedback: question.explanation };
+  if (chosenIndex === UNKNOWN_CHOICE) return unknownGrade(question.explanation);
   const misconception = question.options[chosenIndex]?.misconception ?? null;
   return {
     correct: false,
@@ -13,10 +22,11 @@ export function gradeMcq(question: Mcq, chosenIndex: number): Grade {
 
 /**
  * 点选错误行按规则判分：选中了没有错的行，说明对规则的理解有偏差，视为误解；
- * 没有选（交白卷）视为遗忘。
+ * 选"不知道"或没有选，视为遗忘。
  */
 export function gradePickLine(question: PickLine, chosenIndex: number): Grade {
   if (chosenIndex === question.answerIndex) return { correct: true, errorType: null, feedback: question.explanation };
+  if (chosenIndex === UNKNOWN_CHOICE) return unknownGrade(question.explanation);
   const chosen = question.lines[chosenIndex];
   if (chosen === undefined) return { correct: false, errorType: 'forgetting', feedback: question.explanation };
   return {

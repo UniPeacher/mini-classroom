@@ -4,28 +4,43 @@ import type { ExplainForm, QuestionForm } from '../domain/forms';
 // 说明：为兼容各家模型的严格 JSON Schema 模式，字段一律必填，可空字段用 nullable；
 // 数量、取值范围等 JSON Schema 不一定支持的约束放在 refine 里，由校验失败触发重试。
 
+/**
+ * 题干引用了"下面的代码""以下情境"这类材料。材料必须真的给出（放在 material 里，或以代码块写在题干里），
+ * 否则学习者看不到要判断的东西——模型曾生成过"下面代码执行后输出什么"却没有代码的题。
+ */
+const MATERIAL_REFERENCE = /(下面|以下|如下|下列|这段|上面)的?\s*(代码|程序|片段|示例|例子|情境|场景|配置|命令|语句|函数|写法|输出|对话|材料|数据)/;
+
+export function missingMaterial(text: string, material: string | null): boolean {
+  return MATERIAL_REFERENCE.test(text) && !text.includes('```') && !(material && material.trim());
+}
+
 /** 选择题：每个错误选项标注它代表的误解，用于区分"误解"和"遗忘" */
 export const McqSchema = z
   .object({
     type: z.literal('mcq'),
     stem: z.string(),
+    // 题目材料：作答要看的代码（放在代码块里）或情境，题干只写问题；不需要时为 null
+    material: z.string().nullable(),
     options: z.array(z.object({ text: z.string(), misconception: z.string().nullable() })),
     answerIndex: z.number().int(),
     explanation: z.string(),
   })
   .refine((q) => q.options.length >= 3 && q.options.length <= 5, '选项数量应为 3~5 个')
   .refine((q) => q.answerIndex >= 0 && q.answerIndex < q.options.length, '正确答案序号越界')
-  .refine((q) => q.options[q.answerIndex]?.misconception === null, '正确选项不应标注误解');
+  .refine((q) => q.options[q.answerIndex]?.misconception === null, '正确选项不应标注误解')
+  .refine((q) => !missingMaterial(q.stem, q.material), '题干提到了代码或情境，但没有给出：请放在 material 里');
 
 /** 简答题：参考答案只作对照，不是唯一标准 */
 export const ShortAnswerSchema = z
   .object({
     type: z.literal('short_answer'),
     prompt: z.string(),
+    material: z.string().nullable(),
     referenceAnswer: z.string(),
     keyPoints: z.array(z.string()),
   })
-  .refine((q) => q.keyPoints.length >= 1 && q.keyPoints.length <= 5, '要点数量应为 1~5 个');
+  .refine((q) => q.keyPoints.length >= 1 && q.keyPoints.length <= 5, '要点数量应为 1~5 个')
+  .refine((q) => !missingMaterial(q.prompt, q.material), '题目提到了代码或情境，但没有给出：请放在 material 里');
 
 /** 点选错误行：一段代码或一串推理步骤，其中恰好一行有错 */
 export const PickLineSchema = z

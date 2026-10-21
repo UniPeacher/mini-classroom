@@ -14,12 +14,38 @@ export interface Marks {
   chosen: number | null;
 }
 
-/** 题干：开放题、点选错误行的说明，或选择题的题干 */
+/** 选"不知道"时的序号 */
+export const UNKNOWN_CHOICE = -1;
+
+/** 题干，以及作答要看的材料（代码或情境） */
 export function QuestionStem({ question }: { question: HiddenQuestion }) {
+  const material = question.type === 'mcq' || question.type === 'short_answer' ? question.material : null;
   return (
     <div className="question-stem reading">
       <RichMarkdown>{question.type === 'mcq' ? question.stem : question.prompt}</RichMarkdown>
+      {material && (
+        <div className="question-material">
+          <RichMarkdown>{material}</RichMarkdown>
+        </div>
+      )}
     </div>
+  );
+}
+
+/** "不知道"：每道选择题、点选错误行都有，选它如实记为遗忘，不算误解 */
+function UnknownOption(props: { draft: Draft; onChange: (draft: Draft) => void; disabled: boolean; marked: boolean }) {
+  const { draft, onChange, disabled, marked } = props;
+  return (
+    <button
+      type="button"
+      className={`option unknown ${marked && draft.choice === UNKNOWN_CHOICE ? 'chosen-unknown' : ''}`}
+      aria-pressed={draft.choice === UNKNOWN_CHOICE}
+      disabled={disabled}
+      onClick={() => onChange({ ...draft, choice: UNKNOWN_CHOICE })}
+    >
+      <span className="letter">?</span>
+      <span className="option-text">不知道</span>
+    </button>
   );
 }
 
@@ -53,12 +79,14 @@ export function AnswerArea(props: { question: HiddenQuestion; draft: Draft; onCh
             </span>
           </button>
         ))}
+        <UnknownOption draft={draft} onChange={onChange} disabled={disabled} marked={marks !== null} />
       </div>
     );
   }
 
   if (question.type === 'pick_line') {
     return (
+      <div className="stack" style={{ gap: 8 }}>
       <div className="code-lines" role="group" aria-label="点选有错的一行">
         {question.lines.map((line, i) => (
           <button
@@ -74,6 +102,10 @@ export function AnswerArea(props: { question: HiddenQuestion; draft: Draft; onCh
             <code>{line || ' '}</code>
           </button>
         ))}
+      </div>
+      <div className="options">
+        <UnknownOption draft={draft} onChange={onChange} disabled={disabled} marked={marks !== null} />
+      </div>
       </div>
     );
   }

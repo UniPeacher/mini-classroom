@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { GradeSchema, GraphSchema, McqSchema } from '../../src/shared/content';
+import { GradeSchema, GraphSchema, McqSchema, ShortAnswerSchema } from '../../src/shared/content';
 
 const points = (n: number) =>
   Array.from({ length: n }, (_, i) => ({ key: `kp-${i}`, title: `知识点 ${i}`, summary: '要掌握的内容' }));
@@ -47,6 +47,7 @@ describe('选择题结构校验', () => {
   const mcq = {
     type: 'mcq' as const,
     stem: '题干',
+    material: null,
     options: [
       { text: 'A', misconception: '误解 A' },
       { text: 'B', misconception: null },
@@ -67,6 +68,16 @@ describe('选择题结构校验', () => {
   it('正确答案序号越界时不通过', () => {
     expect(McqSchema.safeParse({ ...mcq, answerIndex: 3 }).success).toBe(false);
   });
+
+  it('题干提到"下面的代码"却没给出代码时不通过，促使模型重新生成', () => {
+    expect(McqSchema.safeParse({ ...mcq, stem: '下面代码执行后，控制台输出什么？' }).success).toBe(false);
+    expect(McqSchema.safeParse({ ...mcq, stem: '以下情境中应该怎么做？', material: '   ' }).success).toBe(false);
+  });
+
+  it('材料放在 material 里，或以代码块写在题干里，都通过', () => {
+    expect(McqSchema.safeParse({ ...mcq, stem: '下面代码执行后，控制台输出什么？', material: '```js\nconsole.log(1)\n```' }).success).toBe(true);
+    expect(McqSchema.safeParse({ ...mcq, stem: '下面代码输出什么？\n```js\nconsole.log(1)\n```' }).success).toBe(true);
+  });
 });
 
 describe('批改结果结构校验', () => {
@@ -76,5 +87,14 @@ describe('批改结果结构校验', () => {
 
   it('答对时不应有错误类型', () => {
     expect(GradeSchema.safeParse({ correct: true, errorType: 'forgetting', feedback: '...' }).success).toBe(false);
+  });
+});
+
+describe('简答题结构校验', () => {
+  const short = { type: 'short_answer' as const, prompt: '解释一下', material: null, referenceAnswer: '答', keyPoints: ['要点'] };
+
+  it('题目提到"这段代码"却没给出时不通过', () => {
+    expect(ShortAnswerSchema.safeParse({ ...short, prompt: '说说这段代码为什么报错' }).success).toBe(false);
+    expect(ShortAnswerSchema.safeParse({ ...short, prompt: '说说这段代码为什么报错', material: '```ts\nlet x: string = 1\n```' }).success).toBe(true);
   });
 });
