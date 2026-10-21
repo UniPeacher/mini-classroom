@@ -46,6 +46,7 @@ const AskBody = z.object({
   quote: z.string().trim().max(2000, '引用的内容不超过 2000 字').optional(),
   question: z.string().trim().min(1, '请输入问题').max(1000, '问题不超过 1000 字'),
 });
+const SuggestBody = z.object({ hint: z.string().trim().max(100, '附加说明不超过 100 字').optional() });
 const AcceptBody = z.object({
   anchorPointId: z.string(),
   points: z
@@ -128,7 +129,10 @@ export function createApp({ services, clock, devMode, frontendUrl }: AppDeps) {
   );
   app.get('/api/ask-threads', (c) => c.json({ threads: asking.listThreads(ThreadQuery.parse(c.req.query())) }));
   app.post('/api/ask-threads', async (c) => c.json(asking.createThread(await body(c, ThreadBody), now(c)), 201));
-  app.post('/api/ask-threads/:id/suggest', async (c) => c.json(await asking.suggest(c.req.param('id'))));
+  app.post('/api/ask-threads/:id/suggest', async (c) => {
+    const { hint } = await body(c, SuggestBody);
+    return c.json(await asking.suggest(c.req.param('id'), hint || undefined));
+  });
   app.post('/api/asks', async (c) => {
     const input = await body(c, AskBody);
     return c.json(await asking.ask({ ...input, quote: input.quote || undefined }, now(c)), 201);

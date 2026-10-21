@@ -14,6 +14,8 @@ const PATHS = {
   topic: 'M3 3h10v10H3zM3 6.5h10',
   bell: 'M4 11V7.5a4 4 0 0 1 8 0V11l1 1.5H3L4 11ZM6.5 13.5a1.5 1.5 0 0 0 3 0',
   download: 'M8 2.5v8M4.5 7 8 10.5 11.5 7M3 13.5h10',
+  history: 'M2.8 8a5.2 5.2 0 1 0 1.5-3.7M2.5 2.8v2.4h2.4M8 5v3.2l2 1.3',
+  attach: 'M10.5 4.5 5.8 9.2a1.4 1.4 0 0 0 2 2l5-5a2.8 2.8 0 0 0-4-4l-5 5a4.2 4.2 0 0 0 6 6l4.2-4.2',
 } as const;
 
 export type IconName = keyof typeof PATHS;

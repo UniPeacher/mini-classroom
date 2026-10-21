@@ -454,6 +454,7 @@ export async function suggestKnowledge(
   model: StructuredModel,
   ctx: { topicTitle: string; title: string; summary: string; existingTitles: string[] },
   asks: { question: string; answer: string }[],
+  hint?: string,
 ): Promise<KnowledgeSuggestion[]> {
   const { knowledgePoints } = await model.generate({
     name: 'knowledge_suggestion',
@@ -465,7 +466,7 @@ export async function suggestKnowledge(
 ${asks.map((a, i) => `${i + 1}. 问：${a.question}\n   答：${a.answer.slice(0, 600)}`).join('\n')}
 
 这个主题已有的知识点（不要重复）：${ctx.existingTitles.join('、')}
-
+${hint ? `\n学习者希望这次整理侧重：\n<hint>\n${hint}\n</hint>\n在只收真正不了解的知识的前提下，按这个侧重挑选和表述。\n` : ''}
 要求：
 - 只收提问暴露出的真正不了解的知识；问题已在回答中讲透、只是一时没想起来的，不收。没有就给空数组，最多 4 个。
 - 每个知识点能单独教授、单独检验，粒度与已有知识点相当。title 简短；summary 一句话写清学会后能做什么。

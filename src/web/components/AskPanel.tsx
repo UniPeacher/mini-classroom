@@ -1,6 +1,7 @@
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 'react';
 import { type AskSuggestions, type AskThread, api } from '../api';
 import { formatTime } from '../labels';
+import { Icon } from './Icon';
 import { RichMarkdown } from '../RichMarkdown';
 import { routeHash } from '../router';
 
@@ -104,21 +105,17 @@ export const AskPanel = forwardRef<AskPanelHandle, AskPanelProps>(function AskPa
   return (
     <section className="panel ask-panel" aria-labelledby="ask-title">
       <header>
-        <h2 id="ask-title">随时提问</h2>
-        <button type="button" className="btn small ghost" onClick={newThread} disabled={busy || currentId === null}>
-          新建会话
-        </button>
+        <h2 id="ask-title">
+          随时提问
+          {current && <span className="meta">会话 {threads.length - threads.indexOf(current)}</span>}
+        </h2>
+        <div className="ask-tools">
+          <HistoryButton threads={threads} currentId={currentId} disabled={busy} onPick={setCurrentId} />
+          <button type="button" className="icon-btn" onClick={newThread} disabled={busy || currentId === null} title="新建会话" aria-label="新建会话">
+            <Icon name="plus" />
+          </button>
+        </div>
       </header>
-      {threads.length > 0 && (
-        <select className="select ask-threads" value={currentId ?? ''} onChange={(e) => setCurrentId(e.target.value || null)} disabled={busy} aria-label="切换会话">
-          {currentId === null && <option value="">新会话</option>}
-          {threads.map((t, i) => (
-            <option key={t.id} value={t.id}>
-              会话 {threads.length - i} · {t.asks.length} 问 · {formatTime(t.createdAt)}
-            </option>
-          ))}
-        </select>
-      )}
       {asks.length === 0 && !busy && (
         <p className="muted small" style={{ marginBottom: 10 }}>
           {currentId === null ? '新会话。' : ''}读不懂、想追问，直接问；也可以在内容里选中一段文字来问。会结合「{contextTitle}」来答。
@@ -183,24 +180,86 @@ export const AskPanel = forwardRef<AskPanelHandle, AskPanelProps>(function AskPa
   );
 });
 
+/** 右上角的历史会话：点开列出这里的全部会话（最新的在前），点一条切换过去 */
+function HistoryButton(props: { threads: AskThread[]; currentId: string | null; disabled: boolean; onPick: (id: string) => void }) {
+  const { threads, currentId, disabled, onPick } = props;
+  const [open, setOpen] = useState(false);
+  const boxRef = useRef<HTMLDivElement>(null);
+
+  // 点到列表外面或按 Esc 时收起
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent) => {
+      if (!boxRef.current?.contains(e.target as Node)) setOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && setOpen(false);
+    document.addEventListener('mousedown', onDown);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', onDown);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [open]);
+
+  return (
+    <div className="history" ref={boxRef}>
+      <button
+        type="button"
+        className="icon-btn"
+        onClick={() => setOpen(!open)}
+        disabled={disabled || threads.length === 0}
+        aria-expanded={open}
+        aria-haspopup="true"
+        title={threads.length === 0 ? '还没有历史会话' : '历史会话'}
+        aria-label="历史会话"
+      >
+        <Icon name="history" />
+      </button>
+      {open && (
+        <div className="history-pop" role="menu" aria-label="历史会话">
+          {threads.map((t, i) => (
+            <button
+              key={t.id}
+              type="button"
+              role="menuitem"
+              className={`history-item ${t.id === currentId ? 'current' : ''}`}
+              onClick={() => {
+                onPick(t.id);
+                setOpen(false);
+              }}
+            >
+              <span className="history-title">{t.asks[0]?.question ?? '（还没有提问）'}</span>
+              <span className="muted small num">
+                会话 {threads.length - i} · {t.asks.length} 问 · {formatTime(t.createdAt)}
+              </span>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 /** 把会话里暴露的不了解的知识整理成一张列表，逐个点选加入认知地图 */
 function AddToMap({ threadId }: { threadId: string }) {
   const [state, setState] = useState<'idle' | 'loading' | 'ready'>('idle');
   const [data, setData] = useState<AskSuggestions | null>(null);
   const [added, setAdded] = useState<Set<number>>(new Set());
   const [saving, setSaving] = useState<Set<number>>(new Set());
+  const [hintOpen, setHintOpen] = useState(false);
+  const [hint, setHint] = useState('');
   const [error, setError] = useState('');
 
   async function suggest() {
     setState('loading');
     setError('');
     try {
-      setData(await api.suggestKnowledge(threadId));
+      setData(await api.suggestKnowledge(threadId, hint.trim() || undefined));
       setAdded(new Set());
       setState('ready');
     } catch (e) {
       setError((e as Error).message);
-      setState('idle');
+      setState(data ? 'ready' : 'idle');
     }
   }
 
@@ -221,18 +280,54 @@ function AddToMap({ threadId }: { threadId: string }) {
   }
 
   const remaining = data ? data.suggestions.map((_, i) => i).filter((i) => !added.has(i)) : [];
+  // 整理按钮 + 附加说明：第一次在上方，整理出结果后移到列表下方，用来换个说明重新整理
+  const bar = (
+    <>
+      <div className="suggest-bar">
+        <button type="button" className="btn small" onClick={suggest} disabled={state === 'loading'}>
+          {state === 'loading' ? '整理中…' : data ? '重新整理' : '把不懂的整理出来，加入认知地图'}
+        </button>
+        <button
+          type="button"
+          className={`icon-btn ${hint.trim() ? 'has-hint' : ''}`}
+          onClick={() => setHintOpen(!hintOpen)}
+          aria-pressed={hintOpen}
+          title="附加说明：引导整理的侧重"
+          aria-label="附加说明，引导整理的侧重"
+          disabled={state === 'loading'}
+        >
+          <Icon name="attach" />
+        </button>
+      </div>
+      {hintOpen && (
+        <input
+          className="input hint-input"
+          value={hint}
+          maxLength={100}
+          autoFocus
+          disabled={state === 'loading'}
+          placeholder="想侧重整理哪方面？例如：只要和错误处理相关的"
+          aria-label="附加说明"
+          onChange={(e) => setHint(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' && !e.nativeEvent.isComposing) {
+              e.preventDefault();
+              void suggest();
+            }
+          }}
+        />
+      )}
+    </>
+  );
+
   return (
     <div className="add-to-map">
-      {state === 'idle' && (
-        <button type="button" className="btn small" onClick={suggest}>
-          把不懂的整理出来，加入认知地图
-        </button>
-      )}
-      {state === 'loading' && <p className="muted small">正在从这个会话的提问里整理不了解的知识…</p>}
-      {state === 'ready' && data && (
+      {!data && bar}
+      {state === 'loading' && <p className="muted small" style={{ marginTop: 8 }}>正在从这个会话的提问里整理不了解的知识{hint.trim() ? `，侧重：${hint.trim()}` : ''}…</p>}
+      {data && state !== 'loading' && (
         <>
           {data.suggestions.length === 0 ? (
-            <p className="muted small">从这些提问里没有看出需要单独再学的知识。</p>
+            <p className="muted small">从这些提问里没有看出需要单独再学的知识。可以附加一句说明，换个侧重重新整理。</p>
           ) : (
             <>
               <div className="suggest-head">
@@ -273,6 +368,7 @@ function AddToMap({ threadId }: { threadId: string }) {
           )}
         </>
       )}
+      {data && <div style={{ marginTop: 12 }}>{bar}</div>}
       {error && <p className="error-text small">{error}</p>}
     </div>
   );

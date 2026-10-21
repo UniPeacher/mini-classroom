@@ -73,8 +73,9 @@ export function createAsking({ db, model }: AskingDeps) {
   /**
    * 从一个会话的提问中整理出还不了解的知识，作为加入认知地图的候选（不直接写入）。
    * 以会话里提问最多的知识点为锚点：新知识点加到它所在的主题，缺的基础挂成它的前置。
+   * hint 是用户附加的一句说明，引导这次整理的侧重；可以换个说明重新整理，已加入的不会再出现。
    */
-  async function suggest(threadId: string) {
+  async function suggest(threadId: string, hint?: string) {
     const thread = requireThread(threadId);
     const rows = asksOf(thread.id);
     if (rows.length === 0) throw new LearningError('这个会话还没有提问', 400);
@@ -87,6 +88,7 @@ export function createAsking({ db, model }: AskingDeps) {
       model,
       { topicTitle: anchor.topicTitle, title: anchor.title, summary: anchor.summary, existingTitles: sameTopic.map((p) => p.title) },
       rows.map((r) => ({ question: r.quote ? `关于「${r.quote}」：${r.question}` : r.question, answer: r.answer })),
+      hint,
     );
     const existing = new Set(sameTopic.map((p) => p.title.trim()));
     return {

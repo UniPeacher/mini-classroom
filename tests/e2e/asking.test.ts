@@ -100,4 +100,15 @@ describe('学习时提问', () => {
     expect((await call('POST', '/api/asks', { threadId: thread.id, itemId: 'nope', question: '问' })).status).toBe(404);
     expect((await call('GET', '/api/ask-threads')).status).toBe(400);
   });
+
+  it('整理时可以附加一句说明引导侧重；换个说明重新整理时，已加入的不再出现', async () => {
+    const { call, prompts, thread, ask } = await inSession();
+    await ask('怎么判断一个值是不是字符串？');
+    const first = (await call('POST', `/api/ask-threads/${thread.id}/suggest`, { hint: '只要和类型判断相关的' })).body;
+    expect(prompts.at(-1)).toContain('<hint>\n只要和类型判断相关的\n</hint>');
+    await call('POST', '/api/asks/accept', { anchorPointId: first.anchor.id, points: [first.suggestions[0]] });
+    const again = (await call('POST', `/api/ask-threads/${thread.id}/suggest`, { hint: '换个角度' })).body;
+    expect(again.suggestions.map((s: any) => s.title)).not.toContain('类型守卫');
+    expect((await call('POST', `/api/ask-threads/${thread.id}/suggest`, { hint: '长'.repeat(101) })).status).toBe(400);
+  });
 });

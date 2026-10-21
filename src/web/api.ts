@@ -120,7 +120,7 @@ export const api = {
     request<{ threads: AskThread[] }>('GET', `/api/ask-threads?${query(scope)}`),
   createAskThread: (scope: { sessionId?: string; pointId?: string }) => request<AskThread>('POST', '/api/ask-threads', scope),
   ask: (input: { threadId: string; question: string; itemId?: string; pointId?: string; quote?: string }) => request<Ask>('POST', '/api/asks', input),
-  suggestKnowledge: (threadId: string) => request<AskSuggestions>('POST', `/api/ask-threads/${threadId}/suggest`),
+  suggestKnowledge: (threadId: string, hint?: string) => request<AskSuggestions>('POST', `/api/ask-threads/${threadId}/suggest`, { hint }),
   acceptKnowledge: (anchorPointId: string, points: KnowledgeSuggestion[]) =>
     request<{ added: number; skipped: number; topicId: string }>('POST', '/api/asks/accept', { anchorPointId, points }),
 

@@ -306,7 +306,26 @@ pre, code { font-family: var(--font-code); }
 .ask-a { font-size: 14px; line-height: 1.65; margin-top: 6px; }
 .ask-turn { display: grid; }
 .add-to-map { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--border); }
-.ask-threads { height: 34px; margin-bottom: 12px; font-size: 13px; }
+.ask-panel > header { position: relative; }
+.ask-panel h2 .meta { font-weight: 400; }
+.ask-tools { display: flex; align-items: center; gap: 2px; margin-right: -6px; }
+/* 只有图标的按钮：历史会话、新建会话、附加说明；悬停有提示文字 */
+.icon-btn { display: inline-grid; place-items: center; width: 32px; height: 32px; padding: 0; border: 0; border-radius: 999px; background: transparent; color: var(--muted); cursor: pointer; transition: background-color var(--t-hover) ease, color var(--t-hover) ease; }
+.icon-btn svg { width: 16px; height: 16px; }
+.icon-btn:hover:not(:disabled), .icon-btn[aria-pressed="true"], .icon-btn[aria-expanded="true"] { background: var(--active); color: var(--text); }
+.icon-btn:disabled { cursor: not-allowed; opacity: 0.45; }
+/* 写了附加说明时，图标上有一个小圆点提示 */
+.icon-btn.has-hint { position: relative; color: var(--accent); }
+.icon-btn.has-hint::after { content: ""; position: absolute; top: 6px; right: 6px; width: 6px; height: 6px; border-radius: 50%; background: var(--accent); }
+.history { position: relative; }
+/* 历史会话列表浮在面板上，所以有阴影 */
+.history-pop { position: absolute; right: 0; top: calc(100% + 6px); z-index: 20; width: 280px; max-height: 320px; overflow-y: auto; padding: 6px; border: 1px solid var(--border); border-radius: var(--radius-inner); background: var(--ground); box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12); /* taste-skill-ignore：弹出的菜单 */ }
+.history-item { display: grid; gap: 2px; width: 100%; padding: 8px 10px; border: 0; border-radius: 10px; background: transparent; text-align: left; font: inherit; color: inherit; cursor: pointer; }
+.history-item:hover { background: var(--surface); }
+.history-item.current { background: var(--active); }
+.history-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
+.suggest-bar { display: flex; align-items: center; gap: 4px; }
+.hint-input { margin-top: 8px; height: 36px; font-size: 13px; }
 .ask-quote { justify-self: end; max-width: 92%; margin: 0 0 4px; padding: 4px 10px; border-left: 3px solid var(--stage-recall); color: var(--muted); font-size: 12px; line-height: 18px; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
 .quote-chip { display: flex; align-items: flex-start; gap: 8px; margin-bottom: 8px; padding: 6px 4px 6px 10px; border-left: 3px solid var(--stage-recall); background: var(--ground); border-radius: 0 10px 10px 0; }
 .quote-chip .quote-text { flex: 1; min-width: 0; font-size: 13px; line-height: 18px; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
@@ -376,7 +395,7 @@ pre, code { font-family: var(--font-code); }
   .sheet { margin: 0; border: 0; border-radius: 0; min-height: 100svh; }
   .topbar { display: flex; align-items: center; gap: 8px; position: sticky; top: 0; z-index: 10; height: 48px; padding: 0 8px; background: var(--chrome); }
   .topbar .t-title { flex: 1; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .icon-btn { display: grid; place-items: center; width: 44px; height: 44px; border: 0; background: transparent; border-radius: 12px; cursor: pointer; }
+  .icon-btn { width: 44px; height: 44px; border-radius: 12px; }
   .icon-btn svg { width: 20px; height: 20px; }
   .canvas { padding: 20px 16px 48px; }
   .grid > * { grid-column: 1 / -1 !important; grid-row: auto !important; }
