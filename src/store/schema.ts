@@ -193,12 +193,24 @@ export const cheatsheets = sqliteTable('cheatsheets', {
   createdAt: timestamp('created_at').notNull(),
 });
 
+/** 提问的会话：一段连续的问答；新建会话后不再带上之前的上下文 */
+export const askThreads = sqliteTable('ask_threads', {
+  id: text('id').primaryKey(),
+  // 在哪一节里问的（学习页），或在看哪个知识点时问的（认知地图、回看页）
+  sessionId: text('session_id').references(() => sessions.id),
+  knowledgePointId: text('knowledge_point_id').references(() => knowledgePoints.id),
+  createdAt: timestamp('created_at').notNull(),
+});
+
 /** 学习时的提问：随时问、随时答，可从中整理出不了解的知识加入认知地图 */
 export const asks = sqliteTable('asks', {
   id: text('id').primaryKey(),
+  threadId: text('thread_id').notNull().references(() => askThreads.id),
   sessionId: text('session_id').references(() => sessions.id),
-  // 提问时正在学的知识点
+  // 提问时正在学或正在看的知识点
   knowledgePointId: text('knowledge_point_id').references(() => knowledgePoints.id),
+  // 提问时引用的一段内容（在讲解或题目里选中的文字）
+  quote: text('quote'),
   question: text('question').notNull(),
   answer: text('answer').notNull(),
   createdAt: timestamp('created_at').notNull(),

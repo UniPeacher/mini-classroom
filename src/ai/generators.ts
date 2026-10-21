@@ -420,7 +420,7 @@ export interface AskContext {
 export async function answerQuestion(
   model: StructuredModel,
   ctx: AskContext | null,
-  input: { question: string; history: { question: string; answer: string }[] },
+  input: { question: string; quote?: string | null; history: { question: string; answer: string }[] },
 ): Promise<string> {
   const context = ctx
     ? `学习者正在学：
@@ -434,14 +434,14 @@ ${ctx.explanation ? `正在读的讲解：\n${ctx.explanation.slice(0, 2500)}\n`
     system: SYSTEM,
     prompt: `${context}
 ${input.history.length ? `之前的问答：\n${input.history.map((h) => `问：${h.question}\n答：${h.answer}`).join('\n\n')}\n` : ''}
-学习者现在问：
+${input.quote ? `学习者选中了这段内容来问：\n「${input.quote.slice(0, 1500)}」\n\n` : ''}学习者现在问：
 """
 ${input.question}
 """
 
 回答要求：
 - 用"你"称呼学习者，直接回答问的问题，第一句就是要点；一般 2~6 句，讲清楚就停。
-- 结合正在学的知识点和讲解来答，用学习者已经看到的名称和例子。
+- 结合正在学的知识点和讲解来答，用学习者已经看到的名称和例子；有选中的内容时，围绕那段内容解释。
 - ${ctx && ctx.questionText && !ctx.answered ? '当前小题还没作答：如果问题是在问这道题的答案，不要直接给出答案或选项，而是提示思路、指出该回看讲解的哪一部分。' : '可以直接讨论小题的答案和原因。'}
 - 问题超出当前知识点时照常回答，但点明它属于另一个知识点。
 - 用 Markdown；需要时给一小段代码，或一张简单的 Mermaid 图（\`\`\`mermaid）。`,

@@ -37,7 +37,15 @@ const AttemptBody = z.object({
 });
 const RatingBody = z.object({ selfRating: z.enum(['hard', 'good', 'easy']) });
 const AppealBody = z.object({ reason: z.string().trim().min(1, '请写明申诉理由').max(1000, '申诉理由不超过 1000 字') });
-const AskBody = z.object({ sessionId: z.string(), itemId: z.string().optional(), question: z.string().trim().min(1, '请输入问题').max(1000, '问题不超过 1000 字') });
+const ThreadBody = z.object({ sessionId: z.string().optional(), pointId: z.string().optional() });
+const ThreadQuery = z.object({ sessionId: z.string().optional(), pointId: z.string().optional() });
+const AskBody = z.object({
+  threadId: z.string(),
+  itemId: z.string().optional(),
+  pointId: z.string().optional(),
+  quote: z.string().trim().max(2000, '引用的内容不超过 2000 字').optional(),
+  question: z.string().trim().min(1, '请输入问题').max(1000, '问题不超过 1000 字'),
+});
 const AcceptBody = z.object({
   anchorPointId: z.string(),
   points: z
@@ -118,9 +126,13 @@ export function createApp({ services, clock, devMode, frontendUrl }: AppDeps) {
   app.post('/api/attempts/:id/appeal', async (c) =>
     c.json(await learning.appealAttempt(c.req.param('id'), (await body(c, AppealBody)).reason, now(c))),
   );
-  app.post('/api/asks', async (c) => c.json(await asking.ask(await body(c, AskBody), now(c)), 201));
-  app.get('/api/sessions/:id/asks', (c) => c.json({ asks: asking.listAsks(c.req.param('id')) }));
-  app.post('/api/sessions/:id/asks/suggest', async (c) => c.json(await asking.suggest(c.req.param('id'))));
+  app.get('/api/ask-threads', (c) => c.json({ threads: asking.listThreads(ThreadQuery.parse(c.req.query())) }));
+  app.post('/api/ask-threads', async (c) => c.json(asking.createThread(await body(c, ThreadBody), now(c)), 201));
+  app.post('/api/ask-threads/:id/suggest', async (c) => c.json(await asking.suggest(c.req.param('id'))));
+  app.post('/api/asks', async (c) => {
+    const input = await body(c, AskBody);
+    return c.json(await asking.ask({ ...input, quote: input.quote || undefined }, now(c)), 201);
+  });
   app.post('/api/asks/accept', async (c) => c.json(asking.accept(await body(c, AcceptBody), now(c)), 201));
   app.post('/api/revisit', async (c) => c.json(learning.answerRevisit((await body(c, RevisitBody)).resumeTopicIds, now(c))));
 
