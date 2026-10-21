@@ -224,8 +224,16 @@ a.row-card:hover, button.row-card:hover { border-color: var(--control); }
 .progress-steps span { flex: 1; height: 4px; border-radius: 999px; background: var(--active); transition: background-color var(--t-ui) ease; }
 .progress-steps span.done { background: var(--stage-recall); }
 .progress-steps span.current { background: var(--text); }
-.item-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 14px; color: var(--muted); }
-.item-head h1 { font-size: 22px; line-height: 1.3; font-weight: 600; color: var(--text); flex-basis: 100%; margin-top: 6px; }
+.item-head { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; color: var(--muted); font-size: var(--fs-small); }
+.item-head h1 { font-size: 24px; line-height: 1.3; font-weight: 600; color: var(--text); flex-basis: 100%; margin-bottom: 2px; }
+.item-head h1:focus { outline: none; }
+/* 这一项的任务：标题之后、内容之前，告诉用户接下来做什么 */
+.task { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 14px 0 24px; padding: 10px 14px; border-radius: var(--radius-inner); background: var(--surface); }
+/* 从阅读过渡到作答的小标题 */
+.answer-title { display: flex; align-items: baseline; gap: 10px; font-size: 15px; font-weight: 600; margin-bottom: 10px; }
+.answer-title .muted { font-size: 13px; font-weight: 400; }
+.secondary-link { display: inline-block; margin-top: 14px; padding: 0; border: 0; background: none; color: var(--muted); font-size: var(--fs-small); text-decoration: underline; text-underline-offset: 3px; cursor: pointer; }
+.secondary-link:hover { color: var(--text); }
 .reading { font-size: var(--fs-read); line-height: 1.7; max-width: 720px; }
 .reading h1, .reading h2, .reading h3 { font-size: 17px; line-height: 1.4; font-weight: 600; margin: 22px 0 8px; }
 .reading > :first-child { margin-top: 0; }
@@ -284,6 +292,7 @@ pre, code { font-family: var(--font-code); }
 .rail-item .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--control); flex: none; }
 .rail-item.done .dot { background: var(--stage-recall); }
 .rail-item.current .dot { background: var(--text); }
+.rail .actions-row .btn.ghost { margin-left: -12px; }
 .rail-item .ri-title { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* ---------- 图解 ---------- */

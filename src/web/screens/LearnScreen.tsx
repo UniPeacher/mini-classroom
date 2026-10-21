@@ -137,6 +137,20 @@ function ItemView(props: {
   const [error, setError] = useState('');
   // 分步揭示、预测揭晓：看完讲解才出题
   const [ready, setReady] = useState(!item.steps && !item.predict);
+  const titleRef = useRef<HTMLHeadingElement>(null);
+
+  // 换到这一项时回到顶部，焦点落在标题上：注意力从这一项的开头开始
+  useEffect(() => {
+    window.scrollTo({ top: 0 });
+    titleRef.current?.focus({ preventScroll: true });
+  }, []);
+
+  // 分步揭示、预测揭晓看完后才出题：题目出现时把答题区带进视线
+  const answerRef = useRef<HTMLElement>(null);
+  const gated = Boolean(item.steps || item.predict);
+  useEffect(() => {
+    if (gated && ready) answerRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  }, [gated, ready]);
 
   async function submit() {
     setSubmitting(true);
@@ -163,18 +177,48 @@ function ItemView(props: {
   }
 
   const question = item.question;
+  const choiceCount = !result && question ? (question.type === 'mcq' ? question.options.length : question.type === 'pick_line' ? Math.min(9, question.lines.length) : 0) : 0;
+  const submittableRef = useRef(false);
+
+  // 键盘：数字键选择，Enter 提交；在输入框里用 ⌘/Ctrl + Enter 提交
+  useEffect(() => {
+    if (result || !ready) return;
+    const onKey = (event: KeyboardEvent) => {
+      const typing = event.target instanceof HTMLTextAreaElement || event.target instanceof HTMLInputElement;
+      // 焦点在普通按钮上时，Enter 由按钮自己响应；焦点在刚点过的选项上时，Enter 是提交
+      const onOption = event.target instanceof HTMLElement && event.target.closest('.question .options, .question .code-lines') !== null;
+      if (event.key === 'Enter' && event.target instanceof HTMLButtonElement && !onOption) return;
+      if (event.key === 'Enter' && (!typing || event.metaKey || event.ctrlKey)) {
+        if (submittableRef.current && !submitting) {
+          event.preventDefault();
+          void submit();
+        }
+        return;
+      }
+      const n = Number(event.key);
+      if (!typing && Number.isInteger(n) && n >= 1 && n <= choiceCount) setDraft((d) => ({ ...d, choice: n - 1 }));
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  });
   const answerIndex = result?.reveal && 'answerIndex' in result.reveal ? (result.reveal.answerIndex ?? null) : null;
   const submittable = item.kind === 'connection' ? draft.text.trim().length > 0 : question ? canSubmit(question, draft) : false;
+  submittableRef.current = submittable;
 
   return (
     <article>
-      <div className="item-head">
+      <header className="item-head">
+        <h1 ref={titleRef} tabIndex={-1}>
+          {item.kind === 'connection' ? `把「${item.title}」和已经会的联系起来` : item.title}
+        </h1>
         <span>{position}</span>
-        <span className={`pill ${item.purpose === 'new' ? 'accent' : ''}`}>{PURPOSE_LABEL[item.purpose]}</span>
-        <span>{item.topicTitle}</span>
+        <span>· {item.topicTitle}</span>
         {item.kind !== 'connection' && <span>· {item.formLabel}</span>}
-        <h1>{item.kind === 'connection' ? `把「${item.title}」和已经会的联系起来` : item.title}</h1>
-      </div>
+      </header>
+      <p className="task">
+        <span className={`pill ${item.purpose === 'new' ? 'accent' : ''}`}>{PURPOSE_LABEL[item.purpose]}</span>
+        {taskOf(item)}
+      </p>
 
       {item.explanation && (
         <div className="lesson-block">
@@ -190,7 +234,10 @@ function ItemView(props: {
       )}
 
       {ready && item.connection && (
-        <div className="question">
+        <section className="question" aria-labelledby="answer-title" ref={answerRef}>
+          <h2 id="answer-title" className="answer-title">
+            答题 <span className="muted">用自己的话写，一两句话就够</span>
+          </h2>
           <div className="question-stem reading">
             <p>{item.connection.prompt}</p>
           </div>
@@ -203,14 +250,17 @@ function ItemView(props: {
             aria-label="联结练习的作答"
             onChange={(e) => setDraft({ ...draft, text: e.target.value })}
           />
-        </div>
+        </section>
       )}
 
       {ready && question && (
-        <div className="question">
+        <section className="question" aria-labelledby="answer-title" ref={answerRef}>
+          <h2 id="answer-title" className="answer-title">
+            答题 <span className="muted">{ANSWER_HINT[question.type]}</span>
+          </h2>
           <QuestionStem question={question} />
           <AnswerArea question={question} draft={draft} onChange={setDraft} marks={result ? { answerIndex, chosen: draft.choice } : null} disabled={!!result || submitting} />
-        </div>
+        </section>
       )}
 
       {ready && !result && (
@@ -218,6 +268,7 @@ function ItemView(props: {
           <button type="button" className="btn primary" onClick={submit} disabled={!submittable || submitting}>
             {submitting ? (question?.type === 'mcq' || question?.type === 'pick_line' ? '提交中…' : 'AI 批改中…') : '提交'}
           </button>
+          <span className="muted small">{choiceCount > 0 ? `键盘：1–${choiceCount} 选择，Enter 提交` : '⌘/Ctrl + Enter 提交'}</span>
           {error && <span className="error-text">{error}</span>}
         </div>
       )}
@@ -228,6 +279,30 @@ function ItemView(props: {
     </article>
   );
 }
+
+/** 这一项要做什么：一句话说明任务，放在标题下面 */
+const TASK: Record<SessionItem['purpose'], string> = {
+  new: '先读讲解，读完答一道小题，检验是否听懂。',
+  advance: '上次没答对，这次换一种讲法再讲一遍。',
+  contrast: '上次把它和易混的概念搞混了，这次并排对比着讲。',
+  review: '隔了一段时间，不看资料，凭记忆回答。',
+  spot_check: '摸底时推断你已经会了，答一道题确认一下。',
+  connection: '用自己的话把刚学的和已经会的联系起来，成立就记进认知地图。',
+};
+
+function taskOf(item: SessionItem): string {
+  if (item.steps) return `${TASK[item.purpose]}讲解分 ${item.steps.length} 步，一步步点开，看完再答题。`;
+  if (item.predict) return `${TASK[item.purpose]}先预测结果，再看揭晓。`;
+  return TASK[item.purpose];
+}
+
+const ANSWER_HINT: Record<NonNullable<SessionItem['question']>['type'], string> = {
+  mcq: '选出正确的一项',
+  pick_line: '点出有错的那一行',
+  short_answer: '用自己的话回答',
+  complete: '写出 ____ 处缺少的部分',
+  fix: '把下面的版本改正确',
+};
 
 /** 预测揭晓：先预测，再揭晓答案和讲解；预测不计分 */
 function Predict({ predict, explanation, onDone }: { predict: NonNullable<SessionItem['predict']>; explanation: string; onDone: () => void }) {
@@ -344,8 +419,33 @@ function ResultView(props: { item: SessionItem; result: Result; onResult: (r: Re
         ? '答对了'
         : `答错了 · ${result.errorType ? ERROR_LABEL[result.errorType] : ''}`;
 
+  // 结果出现时滚进视线，注意力落在判定上
+  const resultRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    resultRef.current?.scrollIntoView({ behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth', block: 'nearest' });
+  }, []);
+
+  // 键盘：1/2/3 自评，Enter 下一项
+  useEffect(() => {
+    if (appealing) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.target instanceof HTMLTextAreaElement || event.target instanceof HTMLInputElement) return;
+      // 焦点在按钮上时，Enter 由按钮自己响应，不再重复处理
+      if (event.key === 'Enter' && event.target instanceof HTMLButtonElement) return;
+      if (result.needsRating) {
+        const rating = ({ '1': 'hard', '2': 'good', '3': 'easy' } as const)[event.key as '1' | '2' | '3'];
+        if (rating) void rate(rating);
+      } else if (event.key === 'Enter' && !busy) {
+        event.preventDefault();
+        onNext();
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  });
+
   return (
-    <div className="result" role="status">
+    <div className="result" role="status" ref={resultRef}>
       <div className={`result-verdict ${result.correct ? 'ok' : result.voided ? '' : 'bad'}`}>{verdict}</div>
       {result.feedback && (
         <div className="reading" style={{ fontSize: 15 }}>
@@ -368,19 +468,38 @@ function ResultView(props: { item: SessionItem; result: Result; onResult: (r: Re
         </p>
       )}
 
-      {!isConnection && !result.correct && !result.voided && !result.appeal && !appealing && (
-        <button type="button" className="btn small ghost" style={{ marginTop: 10, paddingLeft: 0 }} onClick={() => setAppealing(true)}>
-          我觉得判错了，申诉
-        </button>
-      )}
+      {!appealing &&
+        (result.needsRating ? (
+          <div className="rating">
+            <span>回答起来感觉：</span>
+            <button type="button" className="btn" onClick={() => rate('hard')}>
+              困难
+            </button>
+            <button type="button" className="btn" onClick={() => rate('good')}>
+              良好
+            </button>
+            <button type="button" className="btn" onClick={() => rate('easy')}>
+              轻松
+            </button>
+            <span className="muted small">决定下次多久后复习 · 键盘 1 / 2 / 3</span>
+          </div>
+        ) : (
+          <div className="actions-row">
+            <button type="button" className="btn primary" onClick={onNext} disabled={busy}>
+              {isLast ? '完成这一节' : '下一项'}
+            </button>
+            <span className="muted small">Enter</span>
+          </div>
+        ))}
+
       {appealing && (
-        <div className="stack" style={{ marginTop: 12 }}>
+        <div className="stack" style={{ marginTop: 14 }}>
           <label className="field">
             <span className="label">为什么你的答案也对，或者题目哪里有问题？</span>
-            <textarea className="textarea" rows={3} value={reason} onChange={(e) => setReason(e.target.value)} maxLength={1000} />
+            <textarea className="textarea" rows={3} value={reason} onChange={(e) => setReason(e.target.value)} maxLength={1000} autoFocus />
           </label>
           <div className="actions-row" style={{ marginTop: 0 }}>
-            <button type="button" className="btn" onClick={appeal} disabled={!reason.trim() || sending}>
+            <button type="button" className="btn primary" onClick={appeal} disabled={!reason.trim() || sending}>
               {sending ? 'AI 重新判定中…' : '提交申诉'}
             </button>
             <button type="button" className="btn ghost" onClick={() => setAppealing(false)} disabled={sending}>
@@ -391,27 +510,10 @@ function ResultView(props: { item: SessionItem; result: Result; onResult: (r: Re
         </div>
       )}
 
-      {result.needsRating ? (
-        <div className="rating">
-          <span>这次回答起来感觉：</span>
-          <button type="button" className="btn" onClick={() => rate('hard')}>
-            困难
-          </button>
-          <button type="button" className="btn" onClick={() => rate('good')}>
-            良好
-          </button>
-          <button type="button" className="btn" onClick={() => rate('easy')}>
-            轻松
-          </button>
-        </div>
-      ) : (
-        !appealing && (
-          <div className="actions-row">
-            <button type="button" className="btn primary" onClick={onNext} disabled={busy}>
-              {isLast ? '完成这一节' : '下一项'}
-            </button>
-          </div>
-        )
+      {!isConnection && !result.correct && !result.voided && !result.appeal && !appealing && (
+        <button type="button" className="secondary-link" onClick={() => setAppealing(true)}>
+          觉得判错了？申诉
+        </button>
       )}
     </div>
   );
