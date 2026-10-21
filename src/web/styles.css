@@ -215,6 +215,20 @@ a.row-card:hover, button.row-card:hover { border-color: var(--control); }
 .point.edge .p-meta { color: var(--accent); opacity: 1; font-weight: 500; }
 .point.fog { background: var(--ground); border: 1px dashed #c4c9c2; color: var(--muted); }
 .point.chunk { grid-column: span 2; }
+.point { padding-bottom: 18px; }
+.point.edge { padding-bottom: 17.5px; }
+/* 掌握程度条：贴着卡片下边，长度与颜色随掌握程度变化 */
+.mastery { position: absolute; left: 12px; right: 12px; bottom: 7px; height: 3px; border-radius: 999px; background: rgba(31, 32, 29, 0.08); overflow: hidden; }
+.mastery i { display: block; height: 100%; border-radius: inherit; }
+.point.st-apply .mastery, .point.st-retain .mastery, .point.st-recall .mastery { background: rgba(255, 255, 255, 0.45); }
+.mastery.inline { position: relative; left: auto; right: auto; bottom: auto; display: block; width: 56px; flex: none; }
+.mastery-sample { display: inline-block; width: 40px; }
+.mastery-sample .mastery.inline { width: 40px; }
+.map-legend { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px 24px; margin: 28px 0 12px; }
+.next-up-rows { display: grid; gap: 8px; }
+.wide-rows .next-up-rows { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.next-up-columns { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--gap); }
+.next-up-title { display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 500; color: var(--muted); margin-bottom: 8px; }
 .point .parts { font-size: var(--fs-small); line-height: 16px; opacity: 0.9; }
 .topic-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-bottom: 12px; }
 .topic-head .ladder { width: 220px; }
@@ -285,7 +299,13 @@ pre, code { font-family: var(--font-code); }
 .result summary { cursor: pointer; font-weight: 500; }
 .rating { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 14px; }
 .actions-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 16px; }
-.rail { position: sticky; top: 24px; }
+.rail { position: sticky; top: 24px; max-height: calc(100svh - 48px); overflow-y: auto; display: grid; gap: var(--gap); align-content: start; }
+/* 随时提问 */
+.ask-list { display: grid; gap: 12px; max-height: 320px; overflow-y: auto; margin-bottom: 10px; padding-right: 4px; }
+.ask-q { justify-self: end; max-width: 92%; padding: 8px 12px; border-radius: 14px 14px 4px 14px; background: var(--text); color: var(--primary-ink); white-space: pre-wrap; }
+.ask-a { font-size: 14px; line-height: 1.65; margin-top: 6px; }
+.ask-turn { display: grid; }
+.add-to-map { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--border); }
 .rail-list { display: grid; gap: 2px; }
 .rail-item { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 10px; color: var(--muted); }
 .rail-item.current { background: var(--ground); color: var(--text); }
@@ -344,10 +364,12 @@ pre, code { font-family: var(--font-code); }
   .greeting { font-size: 28px; }
   .tile { min-height: 112px; }
   .settings-section { grid-template-columns: minmax(0, 1fr); gap: 12px; padding: 24px 0; }
-  .rail { position: static; }
+  .rail { position: static; max-height: none; overflow: visible; }
   .topic-head .ladder { width: 100%; }
   .point.chunk { grid-column: span 1; }
   .map-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .next-up-columns { grid-template-columns: minmax(0, 1fr); }
+  .wide-rows .next-up-rows { grid-template-columns: minmax(0, 1fr); }
   .btn { min-height: 44px; }
   .option { min-height: 48px; }
 }

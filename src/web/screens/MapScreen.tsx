@@ -4,51 +4,167 @@ import { Icon } from '../components/Icon';
 import { RecordView } from '../components/RecordView';
 import { StageLadder, StageLegend } from '../components/StageLadder';
 import { useResource } from '../hooks';
+import { masteryBarWidth, masteryHue } from '../../domain/mastery';
 import { STAGE_LABEL, relativeDue } from '../labels';
 import { navigate, routeHash } from '../router';
 
-/** 认知地图要回答：我掌握到哪了？下一步能学什么？ */
+/**
+ * 认知地图要回答：我掌握到哪了？下一步能学什么？
+ * 注意力顺序：结论（已学会多少）→ 接下来（今天要复习的、下一步可学的，能直接去学）→ 全图（按主题的知识点卡片，
+ * 图例就在卡片上方）→ 辅助内容（联结、已有知识）。点开知识点时，详情在右侧，地图让出位置。
+ */
 export function MapScreen({ pointId }: { pointId?: string }) {
   const map = useResource(() => api.map(), []);
   const data = map.data;
   const learned = data?.topics.reduce((n, t) => n + t.learned, 0) ?? 0;
   const total = data?.topics.reduce((n, t) => n + t.total, 0) ?? 0;
-  const edge = data?.topics.reduce((n, t) => n + t.edge, 0) ?? 0;
 
   return (
     <>
       <div className="title-row">
         <div>
           <h1>认知地图</h1>
-          <p className="sub">
-            {data ? `已学会 ${learned} / ${total} 个知识点 · 下一步可学 ${edge} 个 · ${data.connections.length} 条亲手建立的联结` : '正在读取…'}
-          </p>
+          <p className="sub">{data ? summaryLine(data, learned, total) : '正在读取…'}</p>
         </div>
-        <StageLegend withMap />
       </div>
       {map.error && <p className="error-text">没能读取认知地图：{map.error}</p>}
       {data && data.topics.length === 0 && <div className="empty">还没有学习主题。回到"今天"添加一个想学的主题。</div>}
       {data && data.topics.length > 0 && (
-        <div className="grid top">
-          {pointId && (
-            <aside className="span-4 rail" style={{ gridColumn: '9 / -1', gridRow: 1 }}>
-              <PointPanel key={pointId} pointId={pointId} map={data} onChanged={map.reload} />
-            </aside>
-          )}
-          <div className="span-8 stack" style={{ gridColumn: '1 / 9', gridRow: 1 }}>
-            {data.topics.map((topic) => (
-              <TopicSection key={topic.id} topic={topic} map={data} selected={pointId} />
-            ))}
+        <>
+          {!pointId && <NextUp map={data} />}
+          <div className="map-legend">
+            <StageLegend withMap />
+            <MasteryLegend />
+          </div>
+          <div className="grid top">
+            {pointId && (
+              <aside className="span-4 rail" style={{ gridColumn: '9 / -1', gridRow: 1 }}>
+                <PointPanel key={pointId} pointId={pointId} map={data} onChanged={map.reload} />
+              </aside>
+            )}
+            <div className="stack" style={{ gridColumn: pointId ? '1 / 9' : '1 / -1', gridRow: 1 }}>
+              {data.topics.map((topic) => (
+                <TopicSection key={topic.id} topic={topic} map={data} selected={pointId} />
+              ))}
+            </div>
           </div>
           {!pointId && (
-            <aside className="span-4 rail stack" style={{ gridColumn: '9 / -1', gridRow: 1 }}>
-              <Connections map={data} />
-              <ExistingKnowledge map={data} onChanged={map.reload} />
-            </aside>
+            <div className="grid top section-gap">
+              <div className="span-6">
+                <Connections map={data} />
+              </div>
+              <div className="span-6">
+                <ExistingKnowledge map={data} onChanged={map.reload} />
+              </div>
+            </div>
           )}
-        </div>
+        </>
       )}
     </>
+  );
+}
+
+function summaryLine(map: CognitiveMap, learned: number, total: number): string {
+  const edge = map.topics.reduce((n, t) => n + t.edge, 0);
+  const due = map.topics.reduce((n, t) => n + t.due, 0);
+  const parts = [`已学会 ${learned} / ${total} 个知识点`, due > 0 ? `今天要复习 ${due} 个` : '今天没有到期的复习', `下一步可学 ${edge} 个`];
+  return parts.join(' · ');
+}
+
+/** 接下来：今天要复习的（最容易忘的在前）和下一步可学的，点开看详情，或直接去开始一节 */
+function NextUp({ map }: { map: CognitiveMap }) {
+  const now = Date.now();
+  const due = map.points
+    .filter((p) => p.nextReviewAt !== null && new Date(p.nextReviewAt).getTime() <= now && p.stage !== 'unlearned' && p.stage !== 'understand')
+    .sort((a, b) => new Date(a.nextReviewAt!).getTime() - new Date(b.nextReviewAt!).getTime());
+  const edge = map.points.filter((p) => p.onEdge);
+  const topicOf = new Map(map.topics.map((t) => [t.id, t.title]));
+  if (due.length === 0 && edge.length === 0) return null;
+  const rows = (list: MapPoint[], limit: number) => (
+    <div className="next-up-rows">
+      {list.slice(0, limit).map((p) => (
+        <a key={p.id} className="row-card" style={{ minHeight: 52 }} href={routeHash({ name: 'map', pointId: p.id })}>
+          <span className="row-main">
+            <span className="row-title">{p.title}</span>
+            <span className="row-sub">
+              {topicOf.get(p.topicId)} · {p.onEdge ? '前置都已学会' : p.stageLabel}
+            </span>
+          </span>
+          <MasteryBar mastery={p.mastery} inline />
+        </a>
+      ))}
+    </div>
+  );
+  const more = (list: MapPoint[], limit: number) => list.length > limit && <p className="muted small" style={{ marginTop: 8 }}>还有 {list.length - limit} 个</p>;
+  // 两类都有时并排；只有一类时它占满宽度，另一类缩成一句话，不留半边空白
+  const both = due.length > 0 && edge.length > 0;
+  const limit = both ? 4 : 6;
+  return (
+    <section className="panel next-up" aria-labelledby="next-up-title">
+      <header>
+        <h2 id="next-up-title">接下来</h2>
+        <a className="btn primary small" href={routeHash({ name: 'today' })}>
+          去开始一节
+        </a>
+      </header>
+      {both ? (
+        <div className="next-up-columns">
+          <div>
+            <h3 className="next-up-title">
+              今天要复习 <span className="chip">{due.length}</span>
+            </h3>
+            {rows(due, limit)}
+            {more(due, limit)}
+          </div>
+          <div>
+            <h3 className="next-up-title">
+              下一步可学 <span className="chip">{edge.length}</span>
+            </h3>
+            {rows(edge, limit)}
+            {more(edge, limit)}
+          </div>
+        </div>
+      ) : (
+        <>
+          <h3 className="next-up-title">
+            {due.length > 0 ? '今天要复习' : '下一步可学'} <span className="chip">{due.length > 0 ? due.length : edge.length}</span>
+            <span style={{ fontWeight: 400 }}>· {due.length > 0 ? '没有可学的新知识点' : '今天没有到期的复习'}</span>
+          </h3>
+          <div className="wide-rows">{rows(due.length > 0 ? due : edge, limit)}</div>
+          {more(due.length > 0 ? due : edge, limit)}
+        </>
+      )}
+    </section>
+  );
+}
+
+/** 掌握程度条：最短 1/4（完全没掌握，红色），越掌握越长越绿，完全掌握占满（绿色） */
+export function MasteryBar({ mastery, inline = false }: { mastery: number; inline?: boolean }) {
+  const percent = Math.round(mastery * 100);
+  return (
+    <span className={`mastery ${inline ? 'inline' : ''}`} role="img" aria-label={`掌握程度 ${percent}%`}>
+      <i style={{ width: `${masteryBarWidth(mastery) * 100}%`, background: `hsl(${masteryHue(mastery)} 62% 40%)` }} />
+    </span>
+  );
+}
+
+function MasteryLegend() {
+  return (
+    <div className="legend">
+      <span>掌握程度：</span>
+      {[
+        { m: 0, label: '没掌握' },
+        { m: 0.5, label: '一半' },
+        { m: 1, label: '完全掌握' },
+      ].map(({ m, label }) => (
+        <span key={label}>
+          <span className="mastery-sample">
+            <MasteryBar mastery={m} inline />
+          </span>
+          {label}
+        </span>
+      ))}
+    </div>
   );
 }
 
@@ -95,6 +211,7 @@ export function TopicSection(props: { topic: MapTopic; map: CognitiveMap; select
                 <span className="p-title">{whole.title}</span>
                 <span className="parts">{chunk.partIds.map((id) => byId.get(id)?.title).join(' · ')}</span>
                 <span className="p-meta">组块 · 全部进入保持阶段</span>
+                <MasteryBar mastery={whole.mastery} />
               </button>
             );
           })}
@@ -116,9 +233,10 @@ function PointCard({ point, selected }: { point: MapPoint; selected: boolean }) 
     <button type="button" className={`point ${className}`} aria-current={selected} onClick={() => navigate({ name: 'map', pointId: point.id })}>
       <span className="p-title">{point.title}</span>
       <span className="p-meta">
-        {point.decomposed ? '拆解出的前置 · ' : ''}
+        {point.decomposed ? '拆解出的前置 · ' : point.origin === 'asked' ? '提问时加入 · ' : ''}
         {meta}
       </span>
+      <MasteryBar mastery={point.mastery} />
     </button>
   );
 }

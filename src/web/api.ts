@@ -10,6 +10,7 @@ type Learning = Services['learning'];
 type Knowledge = Services['knowledge'];
 type PlacementService = Services['placement'];
 type Preferences = Services['preferences'];
+type Asking = Services['asking'];
 
 export type Topic = Jsonify<ReturnType<Learning['listTopics']>[number]>;
 export type Preview = Jsonify<ReturnType<Learning['previewNext']>>;
@@ -34,6 +35,9 @@ export type PlacementState = Jsonify<ReturnType<PlacementService['status']>>;
 export type SettingsView = Jsonify<ReturnType<Preferences['getSettings']>>;
 export type UserSettings = SettingsView['settings'];
 export type Today = Jsonify<ReturnType<Preferences['today']>>;
+export type Ask = Jsonify<ReturnType<Asking['listAsks']>[number]>;
+export type AskSuggestions = Jsonify<Awaited<ReturnType<Asking['suggest']>>>;
+export type KnowledgeSuggestion = AskSuggestions['suggestions'][number];
 export type { Answer, Stage };
 
 const DEV_NOW_KEY = 'weiketang.devNow';
@@ -110,6 +114,12 @@ export const api = {
   appeal: (attemptId: string, reason: string) => request<AppealResult>('POST', `/api/attempts/${attemptId}/appeal`, { reason }),
   finish: (sessionId: string) => request<FinishResult>('POST', `/api/sessions/${sessionId}/finish`),
   answerRevisit: (resumeTopicIds: string[]) => request<{ ok: boolean }>('POST', '/api/revisit', { resumeTopicIds }),
+
+  ask: (sessionId: string, question: string, itemId?: string) => request<Ask>('POST', '/api/asks', { sessionId, itemId, question }),
+  asks: (sessionId: string) => request<{ asks: Ask[] }>('GET', `/api/sessions/${sessionId}/asks`),
+  suggestKnowledge: (sessionId: string) => request<AskSuggestions>('POST', `/api/sessions/${sessionId}/asks/suggest`),
+  acceptKnowledge: (anchorPointId: string, points: KnowledgeSuggestion[]) =>
+    request<{ added: number; skipped: number; topicId: string }>('POST', '/api/asks/accept', { anchorPointId, points }),
 
   map: () => request<CognitiveMap>('GET', '/api/map'),
   point: (pointId: string) => request<PointDetail>('GET', `/api/points/${pointId}`),

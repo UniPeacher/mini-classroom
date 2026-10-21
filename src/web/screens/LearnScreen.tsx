@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { type FinishResult, type Session, type SessionItem, api } from '../api';
+import { AskPanel, type AskPanelHandle } from '../components/AskPanel';
 import { AnswerArea, type Draft, QuestionStem, canSubmit, initialDraft } from '../components/Questions';
 import { ERROR_LABEL, OPTION_LETTERS, PURPOSE_LABEL } from '../labels';
 import { RichMarkdown } from '../RichMarkdown';
@@ -43,6 +44,7 @@ function SessionFlow(props: { session: Session; notice?: string; onFinished: (re
   const firstOpen = session.items.findIndex((i) => !i.attempt || i.attempt.needsRating);
   const [index, setIndex] = useState(firstOpen === -1 ? session.items.length - 1 : firstOpen);
   const [finishing, setFinishing] = useState(false);
+  const askRef = useRef<AskPanelHandle>(null);
   const item = session.items[index]!;
   const isLast = index === session.items.length - 1;
 
@@ -84,6 +86,7 @@ function SessionFlow(props: { session: Session; notice?: string; onFinished: (re
           onNext={next}
           isLast={isLast}
           busy={finishing}
+          onAsk={() => askRef.current?.focus()}
         />
       </div>
       <aside className="span-4 rail">
@@ -115,6 +118,7 @@ function SessionFlow(props: { session: Session; notice?: string; onFinished: (re
             </button>
           </div>
         </section>
+        <AskPanel ref={askRef} sessionId={session.id} itemId={item.id} itemTitle={item.title} />
       </aside>
     </div>
   );
@@ -129,8 +133,10 @@ function ItemView(props: {
   onNext: () => void;
   isLast: boolean;
   busy: boolean;
+  /** 打开提问框 */
+  onAsk: () => void;
 }) {
-  const { sessionId, item, position, result, onResult, onNext, isLast, busy } = props;
+  const { sessionId, item, position, result, onResult, onNext, isLast, busy, onAsk } = props;
   const shownAt = useRef(Date.now());
   const [draft, setDraft] = useState<Draft>(() => initialDraft(item.question));
   const [submitting, setSubmitting] = useState(false);
@@ -184,6 +190,8 @@ function ItemView(props: {
   useEffect(() => {
     if (result || !ready) return;
     const onKey = (event: KeyboardEvent) => {
+      // 提问框里的按键只属于提问
+      if (event.target instanceof HTMLElement && event.target.closest('.ask-panel')) return;
       const typing = event.target instanceof HTMLTextAreaElement || event.target instanceof HTMLInputElement;
       // 焦点在普通按钮上时，Enter 由按钮自己响应；焦点在刚点过的选项上时，Enter 是提交
       const onOption = event.target instanceof HTMLElement && event.target.closest('.question .options, .question .code-lines') !== null;
@@ -217,7 +225,10 @@ function ItemView(props: {
       </header>
       <p className="task">
         <span className={`pill ${item.purpose === 'new' ? 'accent' : ''}`}>{PURPOSE_LABEL[item.purpose]}</span>
-        {taskOf(item)}
+        <span style={{ flex: 1 }}>{taskOf(item)}</span>
+        <button type="button" className="secondary-link" style={{ marginTop: 0 }} onClick={onAsk}>
+          有疑问？问一下
+        </button>
       </p>
 
       {item.explanation && (
