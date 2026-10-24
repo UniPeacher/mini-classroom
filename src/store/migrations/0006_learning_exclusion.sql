@@ -1,0 +1,1 @@
+ALTER TABLE `memory_states` ADD `excluded` integer DEFAULT false NOT NULL;

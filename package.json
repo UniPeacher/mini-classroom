@@ -1,0 +1,65 @@
+{
+  "name": "mini-classroom",
+  "version": "1.1.0",
+  "description": "本机运行的 AI 微课堂：主题澄清、短时学习、主动回忆与间隔复习。",
+  "license": "MIT",
+  "author": "pipdax",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@10.11.0",
+  "engines": {
+    "node": ">=24 <25",
+    "pnpm": ">=10.11.0 <11"
+  },
+  "scripts": {
+    "start": "/bin/bash start.sh",
+    "stop": "/bin/bash stop.sh",
+    "restart": "/bin/bash restart.sh",
+    "dev:server": "tsx watch src/server/main.ts",
+    "dev:web": "vite",
+    "build:web": "vite build",
+    "db:generate": "drizzle-kit generate",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "check": "pnpm typecheck && pnpm test && pnpm build:web",
+    "smoke:ai": "tsx scripts/smoke-ai.ts"
+  },
+  "pnpm": {
+    "overrides": {
+      "@esbuild-kit/core-utils>esbuild": "0.25.12"
+    },
+    "onlyBuiltDependencies": [
+      "better-sqlite3",
+      "esbuild"
+    ]
+  },
+  "dependencies": {
+    "@ai-sdk/anthropic": "^4.0.84",
+    "@ai-sdk/google": "^4.0.101",
+    "@ai-sdk/openai-compatible": "^3.0.74",
+    "@hono/node-server": "^2.1.5",
+    "ai": "^7.0.146",
+    "better-sqlite3": "^13.0.3",
+    "drizzle-orm": "^0.45.4",
+    "hono": "^4.13.13",
+    "mermaid": "^12.2.0",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
+    "react-markdown": "^10.1.0",
+    "remark-gfm": "^4.0.1",
+    "ts-fsrs": "^5.4.2",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^9.6.0",
+    "@types/node": "^26.6.5",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^6.1.2",
+    "drizzle-kit": "^0.31.11",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.4",
+    "vitest": "^5.0.5"
+  }
+}

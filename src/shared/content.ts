@@ -1,0 +1,339 @@
+import { z } from 'zod';
+import type { ExplainForm, QuestionForm } from '../domain/forms';
+
+// 说明：为兼容各家模型的严格 JSON Schema 模式，字段一律必填，可空字段用 nullable；
+// 数量、取值范围等 JSON Schema 不一定支持的约束放在 refine 里，由校验失败触发重试。
+
+/**
+ * 题干引用了"下面的代码""以下情境"这类材料。材料必须真的给出（放在 material 里，或以代码块写在题干里），
+ * 否则学习者看不到要判断的东西——模型曾生成过"下面代码执行后输出什么"却没有代码的题。
+ */
+const MATERIAL_REFERENCE = /(下面|以下|如下|下列|这段|上面)的?\s*(代码|程序|片段|示例|例子|情境|场景|配置|命令|语句|函数|写法|输出|对话|材料|数据)/;
+
+export function missingMaterial(text: string, material: string | null): boolean {
+  return MATERIAL_REFERENCE.test(text) && !text.includes('```') && !(material && material.trim());
+}
+
+/** 选择题：每个错误选项标注它代表的误解，用于区分"误解"和"遗忘" */
+export const McqSchema = z
+  .object({
+    type: z.literal('mcq'),
+    stem: z.string(),
+    // 题目材料：作答要看的代码（放在代码块里）或情境，题干只写问题；不需要时为 null
+    material: z.string().nullable(),
+    options: z.array(z.object({ text: z.string(), misconception: z.string().nullable() })),
+    answerIndex: z.number().int(),
+    explanation: z.string(),
+  })
+  .refine((q) => q.options.length >= 3 && q.options.length <= 5, '选项数量应为 3~5 个')
+  .refine((q) => q.answerIndex >= 0 && q.answerIndex < q.options.length, '正确答案序号越界')
+  .refine((q) => q.options[q.answerIndex]?.misconception === null, '正确选项不应标注误解')
+  .refine((q) => !missingMaterial(q.stem, q.material), '题干提到了代码或情境，但没有给出：请放在 material 里');
+
+/** 简答题：参考答案只作对照，不是唯一标准 */
+export const ShortAnswerSchema = z
+  .object({
+    type: z.literal('short_answer'),
+    prompt: z.string(),
+    material: z.string().nullable(),
+    referenceAnswer: z.string(),
+    keyPoints: z.array(z.string()),
+  })
+  .refine((q) => q.keyPoints.length >= 1 && q.keyPoints.length <= 5, '要点数量应为 1~5 个')
+  .refine((q) => !missingMaterial(q.prompt, q.material), '题目提到了代码或情境，但没有给出：请放在 material 里');
+
+/** 点选错误行：一段代码或一串推理步骤，其中恰好一行有错 */
+export const PickLineSchema = z
+  .object({
+    type: z.literal('pick_line'),
+    prompt: z.string(),
+    /** 代码语言，如 "ts"；不是代码时为 null */
+    language: z.string().nullable(),
+    lines: z.array(z.string()),
+    answerIndex: z.number().int(),
+    explanation: z.string(),
+  })
+  .refine((q) => q.lines.length >= 4 && q.lines.length <= 14, '行数应为 4~14 行')
+  .refine((q) => q.answerIndex >= 0 && q.answerIndex < q.lines.length, '错误行序号越界');
+
+/** 补全：在模板的空缺处（____）写出缺少的部分 */
+export const CompleteSchema = z
+  .object({
+    type: z.literal('complete'),
+    prompt: z.string(),
+    language: z.string().nullable(),
+    template: z.string(),
+    referenceAnswer: z.string(),
+    keyPoints: z.array(z.string()),
+  })
+  .refine((q) => q.template.includes('____'), '模板中应有空缺 ____')
+  .refine((q) => q.keyPoints.length >= 1 && q.keyPoints.length <= 5, '要点数量应为 1~5 个');
+
+/** 修正：给出有问题的代码或做法，写出修正后的版本 */
+export const FixSchema = z
+  .object({
+    type: z.literal('fix'),
+    prompt: z.string(),
+    language: z.string().nullable(),
+    flawed: z.string(),
+    referenceAnswer: z.string(),
+    keyPoints: z.array(z.string()),
+  })
+  .refine((q) => q.keyPoints.length >= 1 && q.keyPoints.length <= 5, '要点数量应为 1~5 个');
+
+export type Mcq = z.infer<typeof McqSchema>;
+export type ShortAnswer = z.infer<typeof ShortAnswerSchema>;
+export type PickLine = z.infer<typeof PickLineSchema>;
+export type Complete = z.infer<typeof CompleteSchema>;
+export type Fix = z.infer<typeof FixSchema>;
+export type Question = Mcq | ShortAnswer | PickLine | Complete | Fix;
+/** 由 AI 批改的开放题 */
+export type OpenQuestion = ShortAnswer | Complete | Fix;
+
+export function questionSchema(form: QuestionForm): z.ZodType<Question> {
+  const schemas = { mcq: McqSchema, short_answer: ShortAnswerSchema, pick_line: PickLineSchema, complete: CompleteSchema, fix: FixSchema };
+  return schemas[form];
+}
+
+export function isOpenQuestion(question: Question): question is OpenQuestion {
+  return question.type === 'short_answer' || question.type === 'complete' || question.type === 'fix';
+}
+
+const EstSecondsSchema = z
+  .number()
+  .int()
+  .refine((s) => s >= 20 && s <= 600, '预估时长应在 20~600 秒之间');
+
+/** 预测揭晓：先给情境让学习者预测，再揭晓；预测不计分 */
+const PredictSchema = z
+  .object({
+    scenario: z.string(),
+    options: z.array(z.string()),
+    answerIndex: z.number().int(),
+    reveal: z.string(),
+  })
+  .refine((p) => p.options.length >= 2 && p.options.length <= 4, '预测选项应为 2~4 个')
+  .refine((p) => p.answerIndex >= 0 && p.answerIndex < p.options.length, '预测答案序号越界');
+
+export type Predict = z.infer<typeof PredictSchema>;
+
+/** 一张教学配图：正文引用标识，以及可独立交给图像模型的完整说明 */
+export const IllustrationRequestSchema = z.object({
+  key: z.string(),
+  prompt: z.string().trim().min(1, '绘图说明不能为空'),
+});
+export type IllustrationRequest = z.infer<typeof IllustrationRequestSchema>;
+
+/** 讲解中引用插画的写法：![说明](illustration:key)，入库后 key 换成插画的 id */
+export const ILLUSTRATION_SCHEME = 'illustration:';
+const ILLUSTRATION_REF = /\]\(illustration:([\w-]+)\)/g;
+const DIAGRAM_BLOCK = /```(mermaid|svg)\b/g;
+/** 把正文里引用的插画 key 换成 replacement 给出的值（入库时换成插画 id）；给出 undefined 的保持不变 */
+export function replaceIllustrationRefs(text: string, replacement: (key: string) => string | undefined): string {
+  return text.replace(ILLUSTRATION_REF, (match, key: string) => {
+    const next = replacement(key);
+    return next === undefined ? match : `](${ILLUSTRATION_SCHEME}${next})`;
+  });
+}
+
+/** 每节讲解配 1~2 张图 */
+export const FIGURES_PER_LESSON = { min: 1, max: 2 } as const;
+
+/** 正文里引用到的插画 key */
+export function illustrationRefs(text: string): string[] {
+  return [...text.matchAll(ILLUSTRATION_REF)].map((m) => m[1]!);
+}
+
+/**
+ * 检查讲解的配图：图的数量（代码画的图 + 插画）在范围内，插画的引用与描述一一对应。
+ * 合格时返回 null，否则返回问题描述（作为校验失败的原因，触发重新生成）。
+ */
+export function figureProblem(texts: string[], illustrations: IllustrationRequest[]): string | null {
+  const body = texts.join('\n');
+  const diagrams = [...body.matchAll(DIAGRAM_BLOCK)].length;
+  const refs = illustrationRefs(body);
+  const keys = illustrations.map((i) => i.key);
+  const total = diagrams + illustrations.length;
+  if (total < FIGURES_PER_LESSON.min || total > FIGURES_PER_LESSON.max) {
+    return `讲解应配 ${FIGURES_PER_LESSON.min}~${FIGURES_PER_LESSON.max} 张图，现在有 ${total} 张`;
+  }
+  if (new Set(keys).size !== keys.length) return '插画的 key 不能重复';
+  const unknown = refs.find((key) => !keys.includes(key));
+  if (unknown) return `正文引用了插画 ${unknown}，但 illustrations 里没有它`;
+  const unplaced = keys.find((key) => refs.filter((ref) => ref === key).length !== 1);
+  if (unplaced) return `插画 ${unplaced} 应在正文中恰好引用一次`;
+  return null;
+}
+
+/** 生成的讲解：内容 + 估时 + 要画的插画 */
+export type LessonDraft = LessonContent & { estSeconds: number; illustrations?: IllustrationRequest[] };
+
+/**
+ * 讲解 + 当场小题。illustrations 为 true 时可以要求画插画（配置了图像模型才开启）。
+ */
+export function lessonSchema(explainForm: ExplainForm, questionForm: QuestionForm, options: { illustrations: boolean } = { illustrations: false }): z.ZodType<LessonDraft> {
+  const base: z.ZodRawShape = {
+    explanation: z.string(),
+    check: questionSchema(questionForm),
+    estSeconds: EstSecondsSchema,
+    ...(options.illustrations ? { illustrations: z.array(IllustrationRequestSchema) } : {}),
+  };
+  const shape =
+    explainForm === 'explain_steps'
+      ? { ...base, steps: z.array(z.string()) }
+      : explainForm === 'explain_predict'
+        ? { ...base, predict: PredictSchema }
+        : base;
+  return z.object(shape).superRefine((value, ctx) => {
+    const lesson = value as unknown as LessonDraft;
+    if (explainForm === 'explain_steps' && (!lesson.steps || lesson.steps.length < 3 || lesson.steps.length > 6)) {
+      ctx.addIssue({ code: 'custom', message: '分步揭示应有 3~6 步' });
+    }
+    const problem = figureProblem([lesson.explanation, ...(lesson.steps ?? [])], lesson.illustrations ?? []);
+    if (problem) ctx.addIssue({ code: 'custom', message: problem });
+  }) as unknown as z.ZodType<LessonDraft>;
+}
+
+/** 复习题 */
+export function reviewSchema(questionForm: QuestionForm): z.ZodType<ReviewContent & { estSeconds: number }> {
+  return z.object({ question: questionSchema(questionForm), estSeconds: EstSecondsSchema });
+}
+
+export interface LessonContent {
+  explanation: string;
+  check: Question;
+  steps?: string[];
+  predict?: Predict;
+}
+
+export interface ReviewContent {
+  question: Question;
+}
+
+/** 联结练习：说明两个知识之间的关系，题目由代码按模板生成，不调用 AI */
+export interface ConnectionContent {
+  prompt: string;
+  partner: { kind: 'point' | 'existing'; id: string; title: string };
+}
+
+/** 批改结果 */
+export const GradeSchema = z
+  .object({
+    correct: z.boolean(),
+    errorType: z.enum(['misconception', 'forgetting']).nullable(),
+    feedback: z.string(),
+  })
+  .refine((g) => (g.correct ? g.errorType === null : g.errorType !== null), '答对时不应有错误类型，答错时必须给出错误类型');
+
+export type Grade = z.infer<typeof GradeSchema>;
+
+/** 联结练习的批改：认可时成为认知地图上的一条联结 */
+export const ConnectionGradeSchema = z.object({
+  accepted: z.boolean(),
+  /** 用一句话概括两者的关系，认可时显示在联结旁 */
+  relation: z.string(),
+  feedback: z.string(),
+});
+
+export type ConnectionGrade = z.infer<typeof ConnectionGradeSchema>;
+
+/**
+ * 申诉的重新判定：
+ * accepted 学习者的答案也成立，改判为答对；void 题目或参考答案本身有误，作废；rejected 维持原判。
+ */
+export const AppealVerdictSchema = z.object({
+  outcome: z.enum(['accepted', 'void', 'rejected']),
+  feedback: z.string(),
+});
+
+export type AppealVerdict = z.infer<typeof AppealVerdictSchema>;
+
+/** 拆解：为反复失败的知识点生成更基础的前置知识点 */
+export const DecompositionSchema = z
+  .object({ knowledgePoints: z.array(z.object({ title: z.string(), summary: z.string() })) })
+  .refine((d) => d.knowledgePoints.length >= 1 && d.knowledgePoints.length <= 3, '应拆出 1~3 个前置知识点');
+
+export type Decomposition = z.infer<typeof DecompositionSchema>;
+
+/** 摸底诊断的准备：已有知识、推断的起点，以及每个候选知识点的一道选择题 */
+export function placementSchema(probeIds: string[]) {
+  return z
+    .object({
+      existingKnowledge: z.array(z.string()),
+      likelyKnownIds: z.array(z.string()),
+      probes: z.array(z.object({ pointId: z.string(), question: McqSchema })),
+    })
+    .refine((p) => p.existingKnowledge.length <= 8, '已有知识最多 8 条')
+    .refine((p) => p.likelyKnownIds.every((id) => probeIds.includes(id)), '起点只能从候选知识点中选')
+    .refine((p) => probeIds.every((id) => p.probes.some((probe) => probe.pointId === id)), '每个候选知识点都要有一道题');
+}
+
+export type PlacementPlan = z.infer<ReturnType<typeof placementSchema>>;
+
+/** 学习时提问的回答 */
+export const AnswerSchema = z.object({ answer: z.string() });
+
+/** 从提问中整理出的、学习者还不了解的知识 */
+export const KnowledgeSuggestionSchema = z
+  .object({
+    knowledgePoints: z.array(
+      z.object({
+        title: z.string(),
+        summary: z.string(),
+        // prerequisite：学懂当前知识点必须先补的基础；extension：相关的延伸知识
+        kind: z.enum(['prerequisite', 'extension']),
+        // 从哪个提问看出不了解，一句话
+        reason: z.string(),
+      }),
+    ),
+  })
+  .refine((s) => s.knowledgePoints.length <= 4, '最多整理出 4 个知识点');
+
+export type KnowledgeSuggestion = z.infer<typeof KnowledgeSuggestionSchema>['knowledgePoints'][number];
+
+/** 速查表 */
+export const CheatsheetSchema = z.object({ markdown: z.string() });
+
+const RelationSchema = z.object({
+  from: z.string(),
+  to: z.string(),
+  type: z.enum(['composition', 'prerequisite', 'confusable']),
+});
+
+type Relation = z.infer<typeof RelationSchema>;
+
+/** 骨架知识图谱：知识点用临时 key 互相引用 */
+export const GraphSchema = z
+  .object({
+    knowledgePoints: z.array(z.object({ key: z.string(), title: z.string(), summary: z.string() })),
+    relations: z.array(RelationSchema),
+  })
+  .refine((g) => g.knowledgePoints.length >= 15 && g.knowledgePoints.length <= 30, '知识点数量应为 15~30 个')
+  .refine((g) => new Set(g.knowledgePoints.map((k) => k.key)).size === g.knowledgePoints.length, '知识点 key 重复')
+  .refine((g) => {
+    const keys = new Set(g.knowledgePoints.map((k) => k.key));
+    return g.relations.every((r) => keys.has(r.from) && keys.has(r.to) && r.from !== r.to);
+  }, '关系引用了不存在的知识点，或指向自身')
+  .refine((g) => !hasPrerequisiteCycle(g.relations), '前置关系存在环');
+
+export type Graph = z.infer<typeof GraphSchema>;
+
+/** 前置关系有环时，环上的知识点永远进不了认知边缘 */
+function hasPrerequisiteCycle(relations: Relation[]): boolean {
+  const next = new Map<string, string[]>();
+  for (const r of relations.filter((r) => r.type === 'prerequisite')) {
+    next.set(r.from, [...(next.get(r.from) ?? []), r.to]);
+  }
+  const visiting = new Set<string>();
+  const done = new Set<string>();
+  const visit = (key: string): boolean => {
+    if (done.has(key)) return false;
+    if (visiting.has(key)) return true;
+    visiting.add(key);
+    const cyclic = (next.get(key) ?? []).some(visit);
+    visiting.delete(key);
+    done.add(key);
+    return cyclic;
+  };
+  return [...next.keys()].some(visit);
+}
