@@ -10,12 +10,7 @@
 
 ![把制作会议纪要 Skill 的目标拆成知识点，选取触发条件作为今天约 10 分钟的学习内容](docs/assets/readme/topic-to-lessons.png)
 
-<details>
-<summary>查看首页截图</summary>
-
 ![首页：输入想学的内容，或继续未完成的微课堂](docs/assets/screenshots/home.png)
-
-</details>
 
 ## 你能得到什么
 
@@ -29,12 +24,7 @@ AI 会和你聊清楚**学来做什么、已经会什么、这次学到哪里**�
 
 做一次摸底，可以减少重复学习已会的内容。也可以跳过，直接从基础开始。
 
-<details>
-<summary>查看学习目标澄清页截图</summary>
-
 ![学习目标澄清页：通过对话明确目的、范围和已有基础，确认后才加入学习计划](docs/assets/screenshots/topic-planning.png)
-
-</details>
 
 ### 2. 用一小段时间，学一点、练一下
 
@@ -46,12 +36,7 @@ AI 会和你聊清楚**学来做什么、已经会什么、这次学到哪里**�
 
 ![练习写 Skill 的触发条件：从“需要总结时使用”得到范围过宽的反馈，再改成具体的会议纪要使用场景](docs/assets/readme/practice-and-feedback.png)
 
-<details>
-<summary>查看学习与作答反馈截图</summary>
-
 ![学习页：阅读讲解与图解、提交自己的作答，并查看针对性反馈和参考答案](docs/assets/screenshots/learning-feedback.png)
-
-</details>
 
 ### 3. 让系统记住该复习什么
 
@@ -61,12 +46,7 @@ AI 会和你聊清楚**学来做什么、已经会什么、这次学到哪里**�
 
 ![“明确用途”回答熟练后拉长复习间隔，“写触发条件”还不清楚时安排较早复习](docs/assets/readme/learning-and-review.png)
 
-<details>
-<summary>查看今天的学习安排截图</summary>
-
 ![“今天”页面：查看本节进度、复习与新学内容、提醒时段和当天学习记录](docs/assets/screenshots/today.png)
-
-</details>
 
 **觉得 AI 判错了，可以申诉。**发现已经学过的内容没弄懂，也能主动选择重新学习。
 
@@ -76,12 +56,7 @@ AI 会和你聊清楚**学来做什么、已经会什么、这次学到哪里**�
 
 ![用制作会议纪要 Skill 的知识点展示已掌握、待巩固、下一步可学和尚未学习的内容](docs/assets/readme/knowledge-map.png)
 
-<details>
-<summary>查看认知地图截图</summary>
-
 ![认知地图：通过知识点卡片查看掌握阶段、到期复习、下一步可学和暂未解锁的内容](docs/assets/screenshots/cognitive-map.png)
-
-</details>
 
 点开知识点，可以回看自己怎么答、哪里答错，以及用自己的话建立的知识联系。暂时不想学的内容可以排除，想继续时再恢复。
 
