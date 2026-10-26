@@ -12,6 +12,9 @@ const executablePath = resolve(executable);
 const directory = await mkdtemp(join(tmpdir(), 'weiketang-desktop-smoke-'));
 const userData = join(directory, 'user-data');
 const pageErrors = [];
+// Windows 会把存在但为空的变量也视为开启，必须删除才能按桌面应用启动。
+const electronEnv = { ...process.env };
+delete electronEnv.ELECTRON_RUN_AS_NODE;
 let application;
 
 /** 启动真正打包的应用；学习记录和模型设置全部隔离在临时目录。 */
@@ -19,7 +22,7 @@ async function launch() {
   const instance = await electron.launch({
     executablePath,
     args: [`--user-data-dir=${userData}`],
-    env: { ...process.env, ELECTRON_RUN_AS_NODE: '' },
+    env: electronEnv,
     timeout: 30000,
   });
   const page = await instance.firstWindow();
@@ -59,7 +62,7 @@ async function closeAndVerify(instance, origin) {
 try {
   const first = await launch();
   application = first.instance;
-  const repeatedLaunch = spawn(executablePath, [`--user-data-dir=${userData}`], { stdio: 'ignore', env: { ...process.env, ELECTRON_RUN_AS_NODE: '' } });
+  const repeatedLaunch = spawn(executablePath, [`--user-data-dir=${userData}`], { stdio: 'ignore', env: electronEnv });
   try {
     const [exitCode] = await once(repeatedLaunch, 'exit', { signal: AbortSignal.timeout(15000) });
     assert.equal(exitCode, 0);

@@ -69,8 +69,6 @@ jobs:
         run: pnpm dist:desktop "--$DESKTOP_TARGET" "--$DESKTOP_ARCH"
       - name: 验证打包应用
         if: runner.os != 'Linux'
-        env:
-          DEBUG: pw:browser
         run: pnpm smoke:desktop -- "$DESKTOP_EXECUTABLE"
       - name: 验证 Linux 打包应用
         if: runner.os == 'Linux'
