@@ -1,0 +1,46 @@
+appId: io.github.pipdax.mini-classroom
+productName: 微课堂
+directories:
+  output: ../installers
+  buildResources: ../../docs/assets/branding
+files:
+  - main.mjs
+  - package.json
+  - web/**/*
+  - migrations/**/*
+  - icon.png
+  - LICENSE
+  - THIRD_PARTY_NOTICES.md
+  - node_modules/better-sqlite3/**/*
+  - node_modules/node-addon-api/**/*
+asar: true
+asarUnpack:
+  - '**/*.node'
+# better-sqlite3 13 使用 Node-API 预构建组件；不重写源码环境的原生依赖。
+npmRebuild: false
+artifactName: 'mini-classroom-${version}-${os}-${arch}.${ext}'
+mac:
+  identity: '-'
+  category: public.app-category.education
+  icon: icon.png
+  target:
+    - dmg
+    - zip
+win:
+  icon: icon.png
+  target:
+    - nsis
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  deleteAppDataOnUninstall: false
+linux:
+  maintainer: pipdax
+  syncDesktopName: true
+  icon: icon.png
+  executableName: mini-classroom
+  category: Education
+  target:
+    - AppImage
+    - deb

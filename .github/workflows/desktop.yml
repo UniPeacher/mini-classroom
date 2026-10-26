@@ -1,0 +1,107 @@
+name: 桌面安装包
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  package:
+    name: ${{ matrix.platform }} · ${{ matrix.arch }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-15
+            platform: macOS
+            target: mac
+            arch: arm64
+            executable: dist/installers/mac-arm64/微课堂.app/Contents/MacOS/微课堂
+          - os: macos-15-intel
+            platform: macOS
+            target: mac
+            arch: x64
+            executable: dist/installers/mac/微课堂.app/Contents/MacOS/微课堂
+          - os: windows-2022
+            platform: Windows
+            target: win
+            arch: x64
+            executable: dist/installers/win-unpacked/微课堂.exe
+          - os: ubuntu-22.04
+            platform: Linux
+            target: linux
+            arch: x64
+            executable: dist/installers/linux-unpacked/mini-classroom
+    defaults:
+      run:
+        shell: bash
+    env:
+      CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+      DESKTOP_TARGET: ${{ matrix.target }}
+      DESKTOP_ARCH: ${{ matrix.arch }}
+      DESKTOP_EXECUTABLE: ${{ matrix.executable }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@41ff72655975bd51cab0327fa583b6e92b6d3061 # v4.2.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+      - name: 按锁文件安装
+        run: pnpm install --frozen-lockfile
+      - name: 类型检查
+        run: pnpm typecheck
+      - name: 自动测试
+        run: pnpm test
+      - name: 构建测试安装包
+        run: pnpm dist:desktop "--$DESKTOP_TARGET" "--$DESKTOP_ARCH"
+      - name: 验证打包应用
+        if: runner.os != 'Linux'
+        run: pnpm smoke:desktop -- "$DESKTOP_EXECUTABLE"
+      - name: 验证 Linux 打包应用
+        if: runner.os == 'Linux'
+        run: xvfb-run -a pnpm smoke:desktop -- "$DESKTOP_EXECUTABLE"
+      - name: 生成安装包校验值
+        run: |
+          node --input-type=module <<'NODE'
+          import { createHash } from 'node:crypto';
+          import { readdir, readFile, writeFile } from 'node:fs/promises';
+          import { join } from 'node:path';
+
+          const directory = 'dist/installers';
+          const files = (await readdir(directory)).filter((name) => /\.(dmg|zip|exe|AppImage|deb)$/.test(name)).sort();
+          if (files.length === 0) throw new Error('没有找到可上传的安装包。');
+          const lines = [];
+          for (const name of files) {
+            const content = await readFile(join(directory, name));
+            const checksum = createHash('sha256').update(content).digest('hex');
+            lines.push(`${checksum}  ${name}`);
+          }
+          await writeFile(join(directory, 'SHA256SUMS.txt'), `${lines.join('\n')}\n`);
+          NODE
+      - name: 上传安装包与校验值
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: desktop-${{ matrix.platform }}-${{ matrix.arch }}
+          path: |
+            dist/installers/*.dmg
+            dist/installers/*.zip
+            dist/installers/*.exe
+            dist/installers/*.AppImage
+            dist/installers/*.deb
+            dist/installers/SHA256SUMS.txt
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30
