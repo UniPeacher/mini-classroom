@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="640" viewBox="0 0 1280 640" role="img" aria-labelledby="title description">
+  <title id="title">mini-classroom · 微课堂</title>
+  <desc id="description">每次约 10 分钟，学一点、练一下。短时学习、主动回忆与间隔复习。</desc>
+  <rect width="1280" height="640" fill="#f5f7f4" />
+  <svg x="80" y="130" width="310" height="310" viewBox="0 0 512 512">
+    <rect width="512" height="512" rx="112" fill="#e9f0eb" />
+    <rect x="88" y="300" width="64" height="124" rx="24" fill="#b7d9d3" />
+    <rect x="180" y="236" width="64" height="188" rx="24" fill="#7dbcb2" />
+    <rect x="272" y="168" width="64" height="256" rx="24" fill="#3d968b" />
+    <rect x="364" y="88" width="64" height="336" rx="24" fill="#1b6e66" />
+  </svg>
+  <g font-family="Arial, 'PingFang SC', 'Microsoft YaHei', sans-serif">
+    <text x="448" y="178" font-size="38" font-weight="600" fill="#1b6e66">微课堂</text>
+    <text x="444" y="262" font-size="68" font-weight="700" letter-spacing="-2" fill="#202923">mini-classroom</text>
+    <text x="448" y="338" font-size="34" font-weight="500" fill="#202923">每次约 10 分钟，学一点、练一下。</text>
+    <text x="448" y="394" font-size="26" fill="#55645c">把想学的内容拆小，让复习跟着掌握情况走。</text>
+    <text x="448" y="458" font-size="25" fill="#1b6e66">短时学习 · 主动回忆 · 间隔复习</text>
+    <path d="M88 530H1192" stroke="#d9e3dc" stroke-width="2" />
+    <text x="88" y="584" font-size="23" fill="#55645c">github.com/pipdax/mini-classroom</text>
+    <text x="1192" y="584" text-anchor="end" font-size="23" fill="#55645c">开源 · 本机运行</text>
+  </g>
+</svg>

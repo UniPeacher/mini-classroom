@@ -1,3 +1,5 @@
+<img src="docs/assets/branding/icon.png" alt="微课堂图标" width="88" height="88" />
+
 # mini-classroom · 微课堂
 
 **说出你想学什么，从一节约 10 分钟的学习开始。**
