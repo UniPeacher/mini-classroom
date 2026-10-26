@@ -141,3 +141,7 @@ pnpm check
 原创代码采用 [MIT 许可证](LICENSE)，版权署名为 **pipdax**。
 
 第三方依赖与材料的许可说明见 [第三方说明](THIRD_PARTY_NOTICES.md)。
+
+## 友情链接
+
+[LINUX DO — 新的理想型社区](https://linux.do/)
