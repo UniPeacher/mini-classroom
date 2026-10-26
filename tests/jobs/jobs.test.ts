@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { createHandlers } from '../../src/jobs/handlers';
 import { claimNext, enqueue } from '../../src/jobs/queue';
-import { createWorker } from '../../src/jobs/worker';
+import { createWorker, type JobHandlers } from '../../src/jobs/worker';
 import { openDb } from '../../src/store/db';
 import { createTopic, getTopic, loadPoints, loadPool, loadStates } from '../../src/store/repo';
 import { DEFAULT_USER_SETTINGS, toSettings } from '../../src/settings';
@@ -99,6 +99,45 @@ describe('后台任务：并发生成候选池', () => {
 });
 
 describe('后台任务：可续跑', () => {
+  it('停止时等待当前任务结束，不再领取下一项任务，下次启动可以继续', async () => {
+    const db = openDb(':memory:');
+    let finishCurrent!: () => void;
+    let notifyStarted!: () => void;
+    const started = new Promise<void>((resolve) => { notifyStarted = resolve; });
+    const current = new Promise<void>((resolve) => { finishCurrent = resolve; });
+    let calls = 0;
+    const handler = {
+      run: async () => {
+        calls++;
+        notifyStarted();
+        await current;
+      },
+    };
+    const handlers: JobHandlers = {
+      fill_pool: handler,
+      generate_graph: handler,
+      prepare_placement: handler,
+      decompose: handler,
+      generate_cheatsheet: handler,
+      generate_illustration: handler,
+    };
+    enqueue(db, 'fill_pool', {}, now);
+    enqueue(db, 'fill_pool', {}, now);
+    const worker = createWorker(db, handlers, () => now);
+    worker.start();
+    await started;
+    const stopped = worker.stop();
+    finishCurrent();
+    await stopped;
+    expect(calls).toBe(1);
+    expect(db.select().from(jobs).all().map((job) => job.status)).toEqual(['done', 'pending']);
+    const restarted = createWorker(db, handlers, () => now);
+    await restarted.runUntilIdle();
+    expect(calls).toBe(2);
+    expect(db.select().from(jobs).all().every((job) => job.status === 'done')).toBe(true);
+    db.$client.close();
+  });
+
   it('进程中断时仍在执行的任务，重启后接着执行', async () => {
     const { db, worker, topicId } = setup();
     claimNext(db, now); // 模拟：任务刚开始执行，进程就被挂起

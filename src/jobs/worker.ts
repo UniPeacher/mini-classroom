@@ -12,7 +12,7 @@ export type JobHandlers = Record<JobType, JobHandler>;
 /** 进程内的后台任务执行器：一次只执行一个任务。 */
 export function createWorker(db: Db, handlers: JobHandlers, clock: () => Date) {
   let timer: NodeJS.Timeout | undefined;
-  let running = false;
+  let activeRun: Promise<void> | undefined;
   let stopped = false;
 
   /** 执行一个任务；队列为空时返回 false。 */
@@ -32,30 +32,34 @@ export function createWorker(db: Db, handlers: JobHandlers, clock: () => Date) {
 
   /** 一直执行到队列为空（测试和启动续跑时使用）。 */
   async function runUntilIdle(): Promise<void> {
-    while (await runOnce());
+    while (!stopped && await runOnce());
   }
 
   /** 启动轮询；先把上次中断的任务放回队列。 */
   function start(intervalMs = 1000): void {
+    if (activeRun || timer) return;
     resetRunning(db, clock());
     stopped = false;
     const tick = async () => {
-      if (!running) {
-        running = true;
-        try {
-          await runUntilIdle();
-        } finally {
-          running = false;
-        }
+      timer = undefined;
+      activeRun = runUntilIdle();
+      try {
+        await activeRun;
+      } catch (error) {
+        console.error('后台任务执行器失败：', error);
+      } finally {
+        activeRun = undefined;
       }
       if (!stopped) timer = setTimeout(tick, intervalMs);
     };
     void tick();
   }
 
-  function stop(): void {
+  async function stop(): Promise<void> {
     stopped = true;
     if (timer) clearTimeout(timer);
+    timer = undefined;
+    await activeRun;
   }
 
   return { runOnce, runUntilIdle, start, stop };

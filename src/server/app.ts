@@ -1,3 +1,4 @@
+import { serveStatic } from '@hono/node-server/serve-static';
 import { Hono } from 'hono';
 import { z } from 'zod';
 import { AiSettingsPatchSchema } from '../ai-settings';
@@ -13,6 +14,8 @@ export interface AppDeps {
   devMode: boolean;
   /** 前端页面地址；直接打开服务端根路径时跳转过去。未知时返回 null */
   frontendUrl?: () => string | null;
+  /** 安装版的正式页面目录；不提供时保持源码版的前后端分离运行。 */
+  webRoot?: string;
 }
 
 const STAGES = ['unlearned', 'inferred', 'understand', 'recall', 'apply', 'retain'] as const;
@@ -72,7 +75,7 @@ const SettingsPatch = UserSettingsSchema.partial();
 const AiTestBody = z.object({ target: z.enum(['text', 'image']), patch: AiSettingsPatchSchema.default({}) });
 
 /** 组装 HTTP 应用；依赖由调用方注入，便于测试。 */
-export function createApp({ services, clock, devMode, frontendUrl }: AppDeps) {
+export function createApp({ services, clock, devMode, frontendUrl, webRoot }: AppDeps) {
   const { learning, topicPlanning, knowledge, placement, preferences, asking, illustrations } = services;
   const app = new Hono();
 
@@ -122,10 +125,12 @@ export function createApp({ services, clock, devMode, frontendUrl }: AppDeps) {
   });
 
   // 服务端只提供 /api 接口；有人直接打开服务端地址时，带去前端页面而不是显示 404
-  app.get('/', (c) => {
-    const url = frontendUrl?.() ?? null;
-    return url ? c.redirect(url) : c.text('这是微课堂的接口服务，页面请打开前端地址（start.sh 启动时会打印）。');
-  });
+  if (!webRoot) {
+    app.get('/', (c) => {
+      const url = frontendUrl?.() ?? null;
+      return url ? c.redirect(url) : c.text('这是微课堂的接口服务，页面请打开前端地址（start.sh 启动时会打印）。');
+    });
+  }
 
   app.get('/api/health', (c) => c.json({ ok: true, devMode }));
 
@@ -232,6 +237,11 @@ export function createApp({ services, clock, devMode, frontendUrl }: AppDeps) {
   });
   app.get('/api/today', (c) => c.json(preferences.today(now(c), TimeZoneQuery.parse(c.req.query()).timeZone)));
 
+  // 页面与接口使用同一来源，安装版不需要开发服务器或放宽跨站限制。
+  if (webRoot) {
+    app.all('/api/*', (c) => c.notFound());
+    app.use('*', serveStatic({ root: webRoot }));
+  }
   return app;
 }
 

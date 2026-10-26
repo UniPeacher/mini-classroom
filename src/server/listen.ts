@@ -18,7 +18,13 @@ export async function listenWithFallback(options: ListenOptions): Promise<{ serv
     // 结果会抢走对方的本机访问。所以先探测：本机这个端口已有程序响应，就视为被占用。
     if (await isAnswering(options.hostname, port)) continue;
     try {
-      return { server: await listenOnce(options, port), port };
+      const server = await listenOnce(options, port);
+      const address = server.address();
+      if (!address || typeof address === 'string') {
+        server.close();
+        throw new Error('未能取得服务实际监听的端口');
+      }
+      return { server, port: address.port };
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'EADDRINUSE') throw error;
     }

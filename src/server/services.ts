@@ -16,6 +16,8 @@ export interface ServiceDeps {
   settings: () => Settings;
   /** 按当前配置取画插画的模型；没有配置（或不传）时讲解只用代码画的图 */
   illustrator?: () => Illustrator | undefined;
+  /** 与模型执行器一致的环境默认值；安装版显式传入空对象。 */
+  env?: NodeJS.ProcessEnv;
 }
 
 /** 接口层用到的全部业务模块 */
