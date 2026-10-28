@@ -2,16 +2,21 @@ import { randomUUID } from 'node:crypto';
 import { asc, desc, eq, sql } from 'drizzle-orm';
 import type { StructuredModel } from '../ai/gateway';
 import { type AskContext, answerQuestion, suggestKnowledge } from '../ai/generators';
+import { teachingContextOf } from '../ai/teaching-context';
 import { enqueue } from '../jobs/queue';
+import type { Settings } from '../settings';
 import type { LessonContent, Question } from '../shared/content';
 import type { Db } from '../store/db';
 import { addPoints, getItems, loadPoints } from '../store/repo';
 import { askThreads, asks, attempts, items, sessionItems } from '../store/schema';
+import { resolvePointTeaching } from '../teaching';
 import { LearningError, questionOf } from './views';
 
 export interface AskingDeps {
   db: Db;
   model: StructuredModel;
+  /** 每次读取最新设置；用来解析知识点所属课程的学科要求。不传时提问不带学科上下文 */
+  settings?: () => Settings;
 }
 
 /** 每次提问带上本会话最近几轮问答，回答能接着上文 */
@@ -28,7 +33,7 @@ export interface AskScope {
  * AI 结合正在学的这一项（或正在看的知识点）和选中的内容来回答；小题作答前只引导、不给答案。
  * 可以从一个会话的提问中整理出还不了解的知识，用户逐个点选加入认知地图，之后的微课堂会安排学习。
  */
-export function createAsking({ db, model }: AskingDeps) {
+export function createAsking({ db, model, settings }: AskingDeps) {
   function createThread(scope: AskScope, now: Date) {
     const id = randomUUID();
     const row = { id, sessionId: scope.sessionId ?? null, knowledgePointId: scope.pointId ?? null, createdAt: now };
@@ -86,7 +91,13 @@ export function createAsking({ db, model }: AskingDeps) {
     const sameTopic = points.filter((p) => p.topicId === anchor.topicId);
     const suggestions = await suggestKnowledge(
       model,
-      { topicTitle: anchor.topicTitle, title: anchor.title, summary: anchor.summary, existingTitles: sameTopic.map((p) => p.title) },
+      {
+        topicTitle: anchor.topicTitle,
+        title: anchor.title,
+        summary: anchor.summary,
+        existingTitles: sameTopic.map((p) => p.title),
+        teaching: teachingOf(anchor.id),
+      },
       rows.map((r) => ({ question: r.quote ? `关于「${r.quote}」：${r.question}` : r.question, answer: r.answer })),
       hint,
     );
@@ -139,6 +150,7 @@ export function createAsking({ db, model }: AskingDeps) {
       explanation: item.kind === 'lesson' ? (item.content as LessonContent).explanation : null,
       questionText: question ? questionText(question) : null,
       answered,
+      teaching: teachingOf(item.knowledgePointId),
     };
   }
 
@@ -161,7 +173,14 @@ export function createAsking({ db, model }: AskingDeps) {
       explanation: (lesson?.content as LessonContent | undefined)?.explanation ?? null,
       questionText: null,
       answered: true,
+      teaching: teachingOf(pointId),
     };
+  }
+
+  /** 这个知识点所属课程此刻的学科要求；没有设置来源时返回 null（提示词保持原样） */
+  function teachingOf(pointId: string) {
+    if (!settings) return null;
+    return teachingContextOf(resolvePointTeaching(db, pointId, settings()).presetId);
   }
 
   return { createThread, listThreads, ask, suggest, accept };

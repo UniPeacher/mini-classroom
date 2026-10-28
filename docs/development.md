@@ -128,6 +128,8 @@ pnpm exec vitest run tests/e2e/topic-planning.test.ts
 
 `tests/domain` 验证业务规则，`tests/ai` 验证模型契约，`tests/e2e` 使用进程内 HTTP 请求验证完整业务链。`tests/web` 主要验证前端逻辑、静态渲染和接口类型。这些测试不能代替浏览器视觉验收或真实供应商验证。
 
+学科与课程重构的使用约定见 [subject-organization.md](subject-organization.md)。界面验收可先运行 `pnpm build:web`，再运行 `pnpm exec tsx scripts/acceptance-organization.ts`，使用终端打印的本机地址。该服务只使用内存数据库和假模型，预置三个学习主题，不读取个人配置或调用收费模型；退出服务后测试数据不保留。
+
 手动验证真实模型时，可在已配置 `.env` 后运行：
 
 ```bash

@@ -1,16 +1,16 @@
 import { useCallback, useEffect, useState } from 'react';
-import { type PlacementState, api } from '../api';
+import { type OrganizationImpact, type PlacementState, api } from '../api';
 import { OPTION_LETTERS, PRIORITY_LABEL, formatDay } from '../labels';
 import { usePolling, useResource } from '../hooks';
-import { openReview } from '../router';
+import { coursePath, useOrganization } from '../organization';import { openReview } from '../router';
 import { RichMarkdown } from '../RichMarkdown';
 import { TopicSection } from './MapScreen';
 import { TopicBrief } from '../components/TopicBrief';
 
 const UNKNOWN = -1;
 
-/** 学习主题页要回答：这个主题学到哪了？摸底做了吗？ */
-export function TopicScreen({ topicId, onTopicsChanged }: { topicId: string; onTopicsChanged: () => void }) {
+/** 学习主题页要回答：这个主题学到哪了？摸底做了吗？属于哪门课程？ */
+export function TopicScreen({ topicId }: { topicId: string }) {
   const map = useResource(() => api.map(), [topicId]);
   const placement = useResource(() => api.placement(topicId), [topicId]);
   const days = useResource(() => api.reviewDays(topicId).then((r) => r.days), [topicId]);
@@ -22,11 +22,10 @@ export function TopicScreen({ topicId, onTopicsChanged }: { topicId: string; onT
   const refresh = useCallback(() => {
     void reloadMap();
     void reloadPlacement();
-    onTopicsChanged();
-  }, [reloadMap, reloadPlacement, onTopicsChanged]);
+  }, [reloadMap, reloadPlacement]);
   usePolling(topic?.graphStatus === 'pending' || placement.data?.status === 'preparing', refresh);
 
-  async function update(patch: { status?: 'active' | 'paused'; priority?: number; subject?: string | null }) {
+  async function update(patch: { status?: 'active' | 'paused'; priority?: number }) {
     setError('');
     try {
       await api.updateTopic(topicId, patch);
@@ -70,7 +69,7 @@ export function TopicScreen({ topicId, onTopicsChanged }: { topicId: string; onT
           </div>
         )}
       </div>
-      <SubjectEditor topicId={topicId} subject={topic.subject ?? null} onSave={(subject) => update({ subject })} />
+      <CourseEditor topicId={topicId} />
       {error && <p className="error-text" style={{ marginBottom: 12 }}>{error}</p>}
       {topic.learningBrief && <details className="topic-saved-brief"><summary>已确认的学习目标</summary><TopicBrief brief={topic.learningBrief} /></details>}
       {topic.status === 'paused' && <p className="notice" style={{ marginBottom: 16 }}>这个主题已暂停：不再新学，学过的知识点照常复习。</p>}
@@ -218,60 +217,121 @@ function PlacementPanel({ topicId, state, onChanged }: { topicId: string; state:
 }
 
 /**
- * 学科标签：用户自己填，用来把主题归到一起、并让一天的课在同一个学科内完成。
- * 已有的标签做成快捷按钮，避免手打出同义标签（"数学" 和 "数学 " 会变成两个学科）。
+ * 主题所属课程：从学科 → 课程里选，直接修改归类。
+ * 未归类时明确说明；归类不会改变已学内容，只影响后续按课程范围的学习。
  */
-function SubjectEditor(props: { topicId: string; subject: string | null; onSave: (subject: string | null) => void }) {
-  const { subject, onSave } = props;
-  const subjects = useResource(() => api.listSubjects().then((r) => r.subjects), []);
+function CourseEditor({ topicId }: { topicId: string }) {
+  const organization = useOrganization();
+  const snapshot = organization.data;
+  const topic = snapshot?.topicById.get(topicId);
   const [editing, setEditing] = useState(false);
-  const [text, setText] = useState(subject ?? '');
-  const known = (subjects.data ?? []).map((s) => s.subject).filter((s) => s !== subject);
+  const [selected, setSelected] = useState<string>('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const [stamp, setStamp] = useState('');
+  const [pending, setPending] = useState<OrganizationImpact | null>(null);
 
-  if (!editing) {
-    return (
-      <p className="muted small subject-line" style={{ marginBottom: 12 }}>
-        {subject ? <>学科：<span className="pill accent">{subject}</span></> : '还没有学科标签。加上之后，可以按学科学习，一天只学一个学科。'}
-        <button type="button" className="card-link" style={{ marginLeft: 8 }} onClick={() => { setText(subject ?? ''); setEditing(true); }}>
-          {subject ? '修改' : '添加学科'}
-        </button>
-      </p>
-    );
+  const courses = snapshot ? snapshot.disciplines.flatMap((node) => node.courses.map((courseNode) => ({ courseNode, disciplineName: node.discipline.name }))) : [];
+  const currentLabel = topic?.courseId ? coursePath(snapshot, topic.courseId) : '未归类';
+
+  if (organization.error) {
+    return <p className="error-text small" role="alert">没能读取课程归类：{organization.error}</p>;
+  }
+  if (!snapshot) return null;
+
+  /** 真正提交：移动课程或取消归类都可能换掉教学预设，确认后才带 confirmed */
+  async function commit() {
+    if (busy) return;
+    const next = selected || null;
+    if (next === (topic?.courseId ?? null)) {
+      setEditing(false);
+      setPending(null);
+      return;
+    }
+    setBusy(true);
+    setError('');
+    try {
+      await api.assignTopic(topicId, next, { confirmed: true });
+      await organization.reload();
+      setEditing(false);
+      setPending(null);
+      setStamp('课程归类已更新');
+    } catch (e) {
+      // 保存失败保留当前选择，方便重试
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
   }
 
-  function commit() {
-    onSave(text.trim() || null);
-    setEditing(false);
+  /** 改归属会改变教学配置：先评估影响，会重新备课就显示数量并确认 */
+  async function save() {
+    if (busy) return;
+    const next = selected || null;
+    if (next === (topic?.courseId ?? null)) {
+      setEditing(false);
+      setPending(null);
+      return;
+    }
+    setBusy(true);
+    setError('');
+    setPending(null);
+    let impact: OrganizationImpact;
+    try {
+      impact = await api.organizationImpact({ kind: 'topics', topicIds: [topicId], courseId: next });
+    } catch (e) {
+      // 读不到影响就不保存，避免未经确认的重新备课
+      setError(`没能读取这次归类的影响，尚未保存。请重试：${(e as Error).message}`);
+      setBusy(false);
+      return;
+    }
+    setBusy(false);
+    if (impact.affectedItems > 0 || impact.modelCalls) {
+      setPending(impact);
+      return;
+    }
+    await commit();
   }
 
   return (
-    <div className="field subject-editor" style={{ marginBottom: 12 }}>
-      <label htmlFor="topic-subject">学科标签</label>
-      <span className="hint">比如「数字信号处理」「液压传动」。留空表示不归类。</span>
-      {known.length > 0 && (
-        <div className="time-chips" style={{ margin: '4px 0' }}>
-          {known.slice(0, 6).map((s) => (
-            <button key={s} type="button" className={`btn small ${text === s ? 'selected' : ''}`} aria-pressed={text === s} onClick={() => setText(text === s ? '' : s)}>
-              {s}
-            </button>
-          ))}
+    <div className="subject-line" style={{ marginBottom: 12 }}>
+      <p className="muted small">
+        所属课程：<span className={`pill ${topic?.courseId ? 'accent' : ''}`}>{currentLabel}</span>
+        {!editing && (
+          <button type="button" className="card-link" style={{ marginLeft: 8 }} onClick={() => { setSelected(topic?.courseId ?? ''); setEditing(true); setError(''); setPending(null); }}>
+            修改
+          </button>
+        )}
+        {stamp && !editing && <span className="muted small" role="status"> {stamp}</span>}
+      </p>
+      {editing && (
+        <div className="actions-row" style={{ marginTop: 8 }}>
+          <select className="select" value={selected} disabled={busy} aria-label="所属课程" onChange={(event) => { setSelected(event.target.value); setPending(null); }}>
+            <option value="">未归类</option>
+            {courses.map(({ courseNode, disciplineName }) => (
+              <option key={courseNode.course.id} value={courseNode.course.id}>{disciplineName} / {courseNode.course.name}</option>
+            ))}
+          </select>
+          <button type="button" className="btn small" onClick={() => void save()} disabled={busy}>{busy ? '保存中…' : '保存'}</button>
+          <button type="button" className="btn small ghost" onClick={() => { setEditing(false); setError(''); setPending(null); }} disabled={busy}>取消</button>
+          {courses.length === 0 && <span className="muted small">还没有专业课程，可以先到「学科与课程」里建一个。</span>}
         </div>
       )}
-      <div className="actions-row" style={{ marginTop: 6 }}>
-        <input
-          id="topic-subject"
-          className="input"
-          type="text"
-          maxLength={40}
-          value={text}
-          autoFocus
-          placeholder="例如：数字信号处理"
-          onChange={(e) => setText(e.target.value)}
-          onKeyDown={(e) => { if (e.key === 'Enter') commit(); }}
-        />
-        <button type="button" className="btn small" onClick={commit}>保存</button>
-        <button type="button" className="btn small ghost" onClick={() => setEditing(false)}>取消</button>
-      </div>
+      {pending && (
+        <div className="impact-confirm" role="alertdialog" aria-labelledby="topic-impact-title">
+          <h3 id="topic-impact-title">改课程归属会重新准备内容</h3>
+          <p>
+            受影响：{pending.affectedTopics} 个学习主题、{pending.affectedItems} 项尚未开始的内容。
+            {pending.modelCalls ? '准备工作可能会调用模型，产生费用。' : ''}
+          </p>
+          <p className="muted small">正在学习的课堂和历史记录保持原样。</p>
+          <div className="actions-row" style={{ marginTop: 0 }}>
+            <button type="button" className="btn small primary" disabled={busy} onClick={() => void commit()}>{busy ? '保存中…' : '确认并保存'}</button>
+            <button type="button" className="btn small ghost" disabled={busy} onClick={() => setPending(null)}>取消</button>
+          </div>
+        </div>
+      )}
+      {error && <p className="error-text" role="alert">{error}</p>}
     </div>
   );
 }

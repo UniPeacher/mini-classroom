@@ -4,12 +4,19 @@ import { illustratorFromConfig, modelFromConfig } from '../ai/gateway';
 import { type AiSettingsPatch, mergeAiSettings, publicAiSettings, readAiSettings, writeAiSettings } from '../ai-settings';
 import { CORE_FORMS, EXPLAIN_FORMS, FORM_INFO, QUESTION_FORMS, STAGE_QUESTION_FORMS } from '../domain/forms';
 import { enqueue } from '../jobs/queue';
-import { type UserSettings, guidanceForSubject, readUserSettings, toSettings, writeUserSettings } from '../settings';
-import { DEFAULT_CONTENT_GUIDANCE, GUIDANCE_MAX_LENGTH, resolveContentGuidance, sameContentGuidance } from '../shared/content-guidance';
+import {
+  DEPRECATED_SETTING_KEYS,
+  type UserSettings,
+  readUserSettings,
+  settingsSource,
+  writeUserSettings,
+} from '../settings';
+import { DEFAULT_CONTENT_GUIDANCE, GUIDANCE_MAX_LENGTH } from '../shared/content-guidance';
 import { SUBJECT_STYLE_INFO, SUBJECT_STYLES } from '../shared/subject-styles';
+import { invalidateChangedTopics, teachingFingerprints } from '../teaching';
 import type { Db } from '../store/db';
-import { items, knowledgePoints, sessions, topics } from '../store/schema';
-import { dayFormatter, timeFormatter } from './views';
+import { sessions } from '../store/schema';
+import { dayFormatter, timeFormatter, LearningError } from './views';
 
 export interface PreferencesDeps {
   db: Db;
@@ -21,22 +28,34 @@ const SLOT_LEAD_MINUTES = 60;
 
 const STAGE_LABELS = { understand: '理解（讲解后的小题）', recall: '回忆', apply: '应用', retain: '保持' } as const;
 
+/** 内容风格预设目录：界面据此列出可选预设、说明，以及该预设的完整要求原文 */
+function presetCatalog() {
+  return SUBJECT_STYLES.map((id) => ({
+    id,
+    label: SUBJECT_STYLE_INFO[id].label,
+    description: SUBJECT_STYLE_INFO[id].description,
+    version: SUBJECT_STYLE_INFO[id].version,
+    tutorial: SUBJECT_STYLE_INFO[id].tutorial ?? '',
+    figure: SUBJECT_STYLE_INFO[id].figure ?? '',
+  }));
+}
+
 /** 设置与今天的学习安排（提醒时段、每日节数上限） */
 export function createPreferences({ db, env = process.env }: PreferencesDeps) {
-  /** 设置及形式目录：设置页据此列出可屏蔽、可调高的形式，核心检验形式标为不可屏蔽 */
+  /**
+   * 设置及形式目录：设置页据此列出可屏蔽、可调高的形式，核心检验形式标为不可屏蔽。
+   * 学科归属与预设选择已移到"学科 → 课程"的管理接口，这里只给预设目录供查看。
+   */
   function getSettings() {
+    const presets = presetCatalog();
     return {
       settings: readUserSettings(db, env),
       guidanceDefaults: DEFAULT_CONTENT_GUIDANCE,
       guidanceMaxLength: GUIDANCE_MAX_LENGTH,
-      // 学科内容风格预设：界面据此列出可选风格、说明，以及该风格的完整要求原文
-      subjectStyles: SUBJECT_STYLES.map((id) => ({
-        id,
-        label: SUBJECT_STYLE_INFO[id].label,
-        description: SUBJECT_STYLE_INFO[id].description,
-        tutorial: SUBJECT_STYLE_INFO[id].tutorial ?? '',
-        figure: SUBJECT_STYLE_INFO[id].figure ?? '',
-      })),
+      // 教学预设目录（新名称）
+      teachingPresets: presets,
+      // 兼容别名：旧界面与测试仍按 subjectStyles 读取同一份目录，不再含任何覆盖规则
+      subjectStyles: presets,
       forms: {
         explain: EXPLAIN_FORMS.map((f) => ({ id: f, label: FORM_INFO[f].label, mobile: FORM_INFO[f].mobile })),
         question: QUESTION_FORMS.map((f) => ({
@@ -53,38 +72,33 @@ export function createPreferences({ db, env = process.env }: PreferencesDeps) {
   }
 
   /**
-   * 保存设置；引导词变化时只作废尚未开始的内容，再按新要求准备。
-   * 只作废内容真正受影响的知识点：改了某个学科的风格，不影响其他学科已备好的内容。
+   * 保存设置。
+   *
+   * 共用引导词会影响所有主题的讲法，因此按"每个主题实际的教学配置指纹"比较前后：
+   * 只作废真正受影响的主题里尚未开始的内容，其他主题的候选池保持原样。
+   * 只有在确实有内容受影响、或会影响候选规划的设置（形式偏好、每节新知识点数）变化时，
+   * 才补一次候选池；提醒时段、回访间隔、时长等改动不触发模型调用。
    */
   function updateSettings(patch: Partial<UserSettings>, now: Date) {
+    const deprecated = DEPRECATED_SETTING_KEYS.filter((key) => key in (patch as Record<string, unknown>));
+    if (deprecated.length > 0) {
+      throw new LearningError(
+        `${deprecated.join('、')} 已停用：学科与内容风格请在"学科与课程"里管理，这里只保存共用引导词与学习节奏`,
+        400,
+      );
+    }
     return db.transaction((tx) => {
-      const beforeSettings = toSettings(readUserSettings(tx, env), env);
+      const settingsOf = settingsSource(tx, env);
+      const before = teachingFingerprints(tx, settingsOf());
       const saved = writeUserSettings(tx, patch, now, env);
-      const afterSettings = toSettings(saved, env);
-      // 引导词、分组或标签覆盖变了才需要重新判断；其他设置不影响已备好的内容
-      const guidancePatched = patch.subjectStyles !== undefined || patch.subjectGroups !== undefined
-        || patch.tagStyles !== undefined
-        || !sameContentGuidance(beforeSettings.contentGuidance, afterSettings.contentGuidance);
-      if (guidancePatched) {
-        // 逐个知识点比较实际生效的引导词：改一个分组只影响挂在它下面的学科
-        const rowOf = tx
-          .select({ pointId: knowledgePoints.id, subject: topics.subject })
-          .from(knowledgePoints)
-          .innerJoin(topics, eq(knowledgePoints.topicId, topics.id))
-          .all();
-        const stale = rowOf
-          .filter(({ subject }) =>
-            !sameContentGuidance(guidanceForSubject(beforeSettings, subject), guidanceForSubject(afterSettings, subject)),
-          )
-          .map((row) => row.pointId);
-        if (stale.length > 0) {
-          tx.update(items)
-            .set({ status: 'void' })
-            .where(and(eq(items.status, 'pooled'), inArray(items.kind, ['lesson', 'review']), inArray(items.knowledgePointId, stale)))
-            .run();
-        }
+      const after = teachingFingerprints(tx, settingsOf());
+      const changedTopics = invalidateChangedTopics(tx, before, after);
+      // 影响候选规划的设置变化后需要重新备课；其余改动不调用模型
+      const planningChanged =
+        patch.blockedForms !== undefined || patch.boostedExplainForms !== undefined || patch.maxNewPerSession !== undefined;
+      if (changedTopics.length > 0 || planningChanged) {
+        enqueue(tx, 'fill_pool', { now: now.toISOString() }, now, { dedupe: true });
       }
-      enqueue(tx, 'fill_pool', { now: now.toISOString() }, now, { dedupe: true });
       return saved;
     });
   }

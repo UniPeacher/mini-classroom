@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { BACKLOG_SESSIONS, MAX_SPOT_CHECKS, type PoolItem, assemble } from '../../src/domain/assemble';
 import type { GraphPoint } from '../../src/domain/edge';
 import { type MemoryState, UNLEARNED } from '../../src/domain/memory';
+import { normalizeScope, sameScope, scopeIncludes } from '../../src/domain/scope';
 
 const DAY = 24 * 3600 * 1000;
 const now = new Date('2026-10-20T12:00:00Z');
@@ -251,5 +252,87 @@ describe('组装规则：按学科学习', () => {
     ]);
     const pool = [review('plain'), review('dsp-a')];
     expect(ids(assemble({ ...base, points, states, pool, subject: '数字信号处理' }).items)).toEqual(['r-dsp-a-short_answer']);
+  });
+});
+
+/** 学科/课程范围：与旧标签范围等价，但按归属关系过滤 */
+describe('组装规则：按学科或课程范围', () => {
+  const owned = (id: string, position: number, disciplineId: string | null, courseId: string | null): GraphPoint => ({
+    ...point(id, position),
+    disciplineId,
+    courseId,
+  });
+
+  it('按学科范围只取该学科的知识点，复习与新学都受限', () => {
+    const points = [owned('stem-a', 1, 'd-stem', 'c-dsp'), owned('lang-a', 2, 'd-lang', 'c-esp')];
+    const pool = [lesson('stem-a'), lesson('lang-a')];
+    const items = assemble({ ...base, points, states: new Map(), pool, scope: { kind: 'discipline', id: 'd-stem' } }).items;
+    expect(items.map((i) => i.knowledgePointId)).toEqual(['stem-a']);
+  });
+
+  it('按课程范围只取这门课程的知识点', () => {
+    const points = [
+      owned('dsp-a', 1, 'd-stem', 'c-dsp'),
+      owned('hyd-a', 2, 'd-stem', 'c-hyd'),
+      owned('esp-a', 3, 'd-lang', 'c-esp'),
+    ];
+    const states = new Map([
+      ['dsp-a', recall(1)],
+      ['hyd-a', recall(3)],
+      ['esp-a', recall(5)],
+    ]);
+    const pool = [review('dsp-a'), review('hyd-a'), review('esp-a')];
+    const items = assemble({ ...base, points, states, pool, scope: { kind: 'course', id: 'c-hyd' } }).items;
+    expect(ids(items)).toEqual(['r-hyd-a-short_answer']);
+  });
+
+  it('范围外的到期内容不会被安排，也不会被算作已复习', () => {
+    const points = [owned('dsp-a', 1, 'd-stem', 'c-dsp'), owned('esp-a', 2, 'd-lang', 'c-esp')];
+    const states = new Map([
+      ['dsp-a', recall(1)],
+      ['esp-a', recall(9)],
+    ]);
+    const pool = [review('dsp-a'), review('esp-a')];
+    const result = assemble({ ...base, points, states, pool, scope: { kind: 'course', id: 'c-dsp' } });
+    expect(ids(result.items)).toEqual(['r-dsp-a-short_answer']);
+    expect(result.newPaused).toBe(false);
+  });
+
+  it('全部范围不受归属影响，未归类的知识点照样安排', () => {
+    const points = [owned('loose', 1, null, null), owned('dsp-a', 2, 'd-stem', 'c-dsp')];
+    const pool = [lesson('loose'), lesson('dsp-a')];
+    const items = assemble({ ...base, points, states: new Map(), pool }).items;
+    expect(items).toHaveLength(2);
+  });
+
+  it('范围里没有可安排的内容时不拿别的范围来凑', () => {
+    const points = [owned('dsp-a', 1, 'd-stem', 'c-dsp')];
+    const states = new Map([['dsp-a', recall(1)]]);
+    const pool = [review('dsp-a')];
+    expect(assemble({ ...base, points, states, pool, scope: { kind: 'course', id: 'c-empty' } }).items).toEqual([]);
+  });
+});
+
+describe('学习范围的规整', () => {
+  it('未知类型、缺少 id 的学科/课程范围都当作全部', () => {
+    expect(normalizeScope(undefined)).toEqual({ kind: 'all' });
+    expect(normalizeScope({ kind: 'discipline' })).toEqual({ kind: 'all' });
+    expect(normalizeScope({ kind: 'course', id: '  ' })).toEqual({ kind: 'all' });
+    expect(normalizeScope({ kind: 'course', id: ' c1 ' })).toEqual({ kind: 'course', id: 'c1' });
+  });
+
+  it('范围相同与不同的比较', () => {
+    expect(sameScope({ kind: 'all' }, { kind: 'all', id: 'ignored' })).toBe(true);
+    expect(sameScope({ kind: 'course', id: 'c1' }, { kind: 'course', id: 'c2' })).toBe(false);
+    expect(sameScope({ kind: 'discipline', id: 'd1' }, { kind: 'discipline', id: 'd1' })).toBe(true);
+  });
+
+  it('归属判断：学科覆盖其下所有课程，课程不覆盖同门学科的其他课程', () => {
+    const point = { disciplineId: 'd1', courseId: 'c1' };
+    expect(scopeIncludes({ kind: 'all' }, point)).toBe(true);
+    expect(scopeIncludes({ kind: 'discipline', id: 'd1' }, point)).toBe(true);
+    expect(scopeIncludes({ kind: 'course', id: 'c1' }, point)).toBe(true);
+    expect(scopeIncludes({ kind: 'course', id: 'c2' }, point)).toBe(false);
+    expect(scopeIncludes({ kind: 'discipline', id: 'd2' }, point)).toBe(false);
   });
 });

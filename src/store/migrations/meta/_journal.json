@@ -64,6 +64,13 @@
       "when": 1793171202374,
       "tag": "0008_vengeful_harpoon",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "6",
+      "when": 1793186512959,
+      "tag": "0009_mute_leper_queen",
+      "breakpoints": true
     }
   ]
 }

@@ -5,7 +5,7 @@ import { SelectionToAsk } from '../components/SelectionToAsk';
 import { AnswerArea, type Draft, QuestionStem, canSubmit, initialDraft } from '../components/Questions';
 import { ERROR_LABEL, OPTION_LETTERS, PURPOSE_LABEL } from '../labels';
 import { RichMarkdown } from '../RichMarkdown';
-import { navigate, routeHash } from '../router';
+import { lastScope, navigate, routeHash } from '../router';
 
 /** 作答结果；联结练习另带 AI 对两者关系的一句话概括 */
 type Result = NonNullable<SessionItem['attempt']> & { relation?: string | null };
@@ -21,12 +21,13 @@ export function LearnScreen({ initial, onDone }: { initial: { session: Session; 
 
   useEffect(() => {
     let active = true;
-    // 每次进入学习页都读取当前状态，地图里的学习选择也能立即生效
+    // 每次进入学习页都读取当前状态，地图里的学习选择也能立即生效。
+    // 这里一定是"继续已有的那一节"，所以显式 resume：不带 resume 会被服务端按未确认处理并拒绝。
     async function resume() {
       const preview = await api.preview();
       if (!active) return;
-      if (!preview.open) return navigate({ name: 'today' });
-      const resumed = await api.nextSession();
+      if (!preview.open) return navigate({ name: 'today', scope: lastScope() });
+      const resumed = await api.nextSession({ resume: true });
       if (active && resumed.session) setState({ session: resumed.session, notice: initial?.notice });
     }
     void resume().catch((e: Error) => { if (active) setError(e.message); });
@@ -657,7 +658,7 @@ function FinishView(props: { result: FinishResult; session: Session; results: Re
         <div className="actions-row" style={{ marginTop: 24 }}>
           <a
             className="btn primary"
-            href={routeHash({ name: 'today' })}
+            href={routeHash({ name: 'today', scope: lastScope() })}
             onClick={() => {
               onLeave();
             }}

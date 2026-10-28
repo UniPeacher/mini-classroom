@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 import Database from 'better-sqlite3';
 import { drizzle } from 'drizzle-orm/better-sqlite3';
 import { migrate } from 'drizzle-orm/better-sqlite3/migrator';
+import { migrateLegacyOrganization } from './legacy-organization';
 import * as schema from './schema';
 
 const defaultMigrationsFolder = fileURLToPath(new URL('./migrations', import.meta.url));
@@ -17,6 +18,9 @@ export function openDb(path: string, migrationsFolder = defaultMigrationsFolder)
     sqlite.pragma('foreign_keys = ON');
     const db = drizzle(sqlite, { schema });
     migrate(db, { migrationsFolder });
+    // 旧版学科标签与风格配置只在这里读一次原始值，转成学科/课程并留下报告。
+    // 只改组织结构：不生成内容、不入队任务、不作废候选内容、不改动学习历史。
+    migrateLegacyOrganization(db, new Date());
     return db;
   } catch (error) {
     sqlite.close();

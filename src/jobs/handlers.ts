@@ -3,6 +3,7 @@ import { desc, eq, inArray } from 'drizzle-orm';
 import { AiOutputError, type Illustrator, type StructuredModel } from '../ai/gateway';
 import { decomposePoint, generateCheatsheet, generateGraph, preparePlacement } from '../ai/generators';
 import { ILLUSTRATION_SIZE } from '../ai/illustration-style';
+import { teachingContextOf } from '../ai/teaching-context';
 import { UNLEARNED } from '../domain/memory';
 import { chooseProbePoints } from '../domain/placement';
 import type { Settings } from '../settings';
@@ -20,6 +21,7 @@ import {
   wasDecomposed,
 } from '../store/repo';
 import { attempts, cheatsheets, connections, existingKnowledge, illustrations, items, placements, topics } from '../store/schema';
+import { resolveTopicTeaching } from '../teaching';
 import { fillPool } from './fill-pool';
 import { contextOf } from './generate-item';
 import { enqueue } from './queue';
@@ -77,7 +79,8 @@ export function createHandlers(deps: HandlerDeps): JobHandlers {
         if (!topic) throw new Error(`主题不存在：${topicId}`);
         if (topic.graphStatus === 'ready') return;
         try {
-          const graph = await generateGraph(model, topic.title, topic.learningBrief);
+          const teaching = resolveTopicTeaching(db, topicId, deps.settings());
+          const graph = await generateGraph(model, topic.title, topic.learningBrief, teachingContextOf(teaching.presetId));
           saveGraph(db, topicId, graph, clock());
         } catch (error) {
           // 结构始终不合法时重试也没意义，直接判定失败；网络等错误交给队列重试
@@ -111,11 +114,13 @@ export function createHandlers(deps: HandlerDeps): JobHandlers {
         const points = loadPoints(db).filter((p) => p.topicId === topicId && !p.excluded);
         const probeIds = chooseProbePoints(points);
         try {
+          const teaching = resolveTopicTeaching(db, topicId, deps.settings());
           const plan = await preparePlacement(model, {
             topicTitle: topic.title,
             background: placement.background,
             points: points.map((p) => ({ id: p.id, title: p.title, summary: p.summary })),
             probeIds,
+            teaching: teachingContextOf(teaching.presetId),
           });
           const now = clock();
           db.transaction((tx) => {
@@ -151,9 +156,11 @@ export function createHandlers(deps: HandlerDeps): JobHandlers {
         const byId = new Map(points.map((p) => [p.id, p]));
         const state = loadStates(db).get(knowledgePointId) ?? UNLEARNED;
         try {
+          const teaching = resolveTopicTeaching(db, point.topicId, deps.settings());
           const result = await decomposePoint(model, {
             ...contextOf(point, byId, { state }),
             existingTitles: points.filter((p) => p.topicId === point.topicId).map((p) => p.title),
+            teaching: teachingContextOf(teaching.presetId),
           });
           if (loadPoints(db).find((p) => p.id === knowledgePointId)?.excluded) return;
           addPoints(db, point, result.knowledgePoints.map((k) => ({ ...k, prerequisite: true })), 'decomposed', clock());
@@ -173,7 +180,14 @@ export function createHandlers(deps: HandlerDeps): JobHandlers {
         const sheet = db.select().from(cheatsheets).where(eq(cheatsheets.id, cheatsheetId)).get();
         if (!sheet || sheet.status !== 'pending') return;
         try {
-          const markdown = await generateCheatsheet(model, { scopeTitle: sheet.title, ...cheatsheetInput(sheet.scope as CheatsheetScope) });
+          const scope = sheet.scope as CheatsheetScope;
+          // 速查表可能跨多个主题/课程：按范围里第一个主题的教学配置给出学科要求
+          const teaching = scope.topicIds[0] ? resolveTopicTeaching(db, scope.topicIds[0], deps.settings()) : null;
+          const markdown = await generateCheatsheet(model, {
+            scopeTitle: sheet.title,
+            ...cheatsheetInput(scope),
+            teaching: teachingContextOf(teaching?.presetId),
+          });
           db.update(cheatsheets).set({ status: 'ready', markdown }).where(eq(cheatsheets.id, cheatsheetId)).run();
         } catch (error) {
           if (!(error instanceof AiOutputError)) throw error;

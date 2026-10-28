@@ -23,27 +23,59 @@ export interface GeneratedItem {
   illustrations: IllustrationRequest[];
   /** 本次生成使用的引导词，绘图继续使用这一份。 */
   contentGuidance: ContentGuidance;
+  /**
+   * 生成时实际生效的教学配置指纹。入库时一并保存，之后配置改动据此判断内容是否过期。
+   * 没有解析教学配置时为空，存 null（旧内容语义：不据此自动作废）。
+   */
+  guidanceFingerprint?: string | null;
 }
 
 export interface GenerateOptions {
   /** 配置了图像模型时，讲解可以配插画 */
   illustrations: boolean;
   contentGuidance: ContentGuidance;
+  /**
+   * 生成前解析出的教学配置指纹。生成结束后调用方会重新解析并比较：
+   * 不一致就丢弃这次结果，不把过期内容放进候选池。
+   */
+  guidanceFingerprint?: string | null;
 }
 
 /** 按需要的形式为知识点生成一项内容：讲解 + 当场小题，或复习题 */
 export async function generateItem(model: StructuredModel, ctx: PointContext, need: PoolNeed, options: GenerateOptions): Promise<GeneratedItem> {
   if (need.kind === 'lesson') {
     const { estSeconds, illustrations = [], ...content } = await generateLesson(model, ctx, need, options);
-    return { knowledgePointId: need.knowledgePointId, kind: 'lesson', form: need.explainForm, questionForm: need.questionForm, estSeconds, content, illustrations, contentGuidance: options.contentGuidance };
+    return {
+      knowledgePointId: need.knowledgePointId,
+      kind: 'lesson',
+      form: need.explainForm,
+      questionForm: need.questionForm,
+      estSeconds,
+      content,
+      illustrations,
+      contentGuidance: options.contentGuidance,
+      guidanceFingerprint: options.guidanceFingerprint ?? null,
+    };
   }
   const { estSeconds, ...content } = await generateReview(model, ctx, need.questionForm, options);
-  return { knowledgePointId: need.knowledgePointId, kind: 'review', form: need.questionForm, questionForm: need.questionForm, estSeconds, content, illustrations: [], contentGuidance: options.contentGuidance };
+  return {
+    knowledgePointId: need.knowledgePointId,
+    kind: 'review',
+    form: need.questionForm,
+    questionForm: need.questionForm,
+    estSeconds,
+    content,
+    illustrations: [],
+    contentGuidance: options.contentGuidance,
+    guidanceFingerprint: options.guidanceFingerprint ?? null,
+  };
 }
 
 /**
  * 把生成的内容存入候选池。有插画时为每张建一条记录（含完整提示词）、排队后台去画，
  * 并把正文里的 illustration:key 换成插画的 id，之后在哪里显示这段讲解都能找到图。
+ *
+ * 条目的教学配置指纹一并保存，供之后判断内容是否仍对应当前配置。
  */
 export function saveGeneratedItem(db: Executor, { illustrations, contentGuidance, ...item }: GeneratedItem, now: Date): string {
   const ids = new Map(illustrations.map((request) => [request.key, randomUUID()]));

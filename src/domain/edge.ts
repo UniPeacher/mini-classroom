@@ -9,6 +9,10 @@ export interface GraphPoint {
   topicId?: string;
   /** 所属主题的学科标签；未归类时为 null。按学科学习时据此限定范围 */
   subject?: string | null;
+  /** 所属课程；用于按课程限定一节的范围 */
+  courseId?: string | null;
+  /** 所属学科（由课程推导）；用于按学科限定一节的范围 */
+  disciplineId?: string | null;
   /** 所属主题此刻能否新学：主题暂停、或摸底诊断还没完成时为 false。缺省为 true */
   learnable?: boolean;
   /** 用户选择不学：停止所有学习安排，保留真实掌握阶段。缺省为 false */

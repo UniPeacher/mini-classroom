@@ -1,9 +1,11 @@
 import { eq } from 'drizzle-orm';
 import { describe, expect, it } from 'vitest';
 import type { StructuredRequest } from '../../src/ai/gateway';
-import { readUserSettings, settingsSource } from '../../src/settings';
+import { readUserSettings, settingsSource, UserSettingsPatchSchema } from '../../src/settings';
+import { DEFAULT_CONTENT_GUIDANCE } from '../../src/shared/content-guidance';
 import { loadPool } from '../../src/store/repo';
 import { appSettings, illustrations, items, knowledgePoints, memoryStates, sessions, topics } from '../../src/store/schema';
+import { teachingFingerprint } from '../../src/teaching';
 import { createFakeIllustrator } from '../fixtures/fake-model';
 import { DAY1, createHarness } from '../fixtures/harness';
 
@@ -29,14 +31,36 @@ function holdLessons(h: ReturnType<typeof createHarness>) {
   return { entered, release };
 }
 
+/** 建一个学科（含预设）和一门课程，返回 id */
+async function makeCourse(h: ReturnType<typeof createHarness>, discipline: string, presetId: string, name: string) {
+  const d = (await h.call('POST', '/api/disciplines', { name: discipline, presetId })).body;
+  const c = (await h.call('POST', '/api/courses', { name, disciplineId: d.id })).body;
+  return { disciplineId: d.id as string, courseId: c.id as string };
+}
+
+/** 把主题归入课程（走明确的组织接口，不再用旧的标签设置） */
+async function assign(h: ReturnType<typeof createHarness>, courseId: string, topicIds: string[]) {
+  const res = await h.call('PUT', `/api/courses/${courseId}/topics`, { topicIds });
+  expect(res.status).toBe(200);
+  return res.body;
+}
+
+/** 知识点 → 所属课程 */
+function courseOfPoint(h: ReturnType<typeof createHarness>) {
+  const topicOf = new Map(h.db.select().from(knowledgePoints).all().map((p) => [p.id, p.topicId]));
+  const courseOfTopic = new Map(h.db.select().from(topics).all().map((t) => [t.id, t.courseId]));
+  return (pointId: string) => courseOfTopic.get(topicOf.get(pointId) ?? '') ?? null;
+}
+
 describe('两个内容引导词设置', () => {
   it('已有设置没有引导词字段时，保留原学习参数并采用默认引导词', async () => {
     const h = createHarness();
     h.db.insert(appSettings).values({ key: 'user_settings', value: { sessionMinutes: 15, blockedForms: ['complete'] }, updatedAt: DAY1 }).run();
     const view = (await h.call('GET', '/api/settings')).body;
     expect(view.settings).toMatchObject({ sessionMinutes: 15, blockedForms: ['complete'], tutorialGuidance: null, figureGuidance: null });
-    expect(settingsSource(h.db, {})().contentGuidance).toEqual(view.guidanceDefaults);
+    expect(settingsSource(h.db, {})().contentGuidance).toEqual(DEFAULT_CONTENT_GUIDANCE);
   });
+
   it('提供可编辑的默认说明，保存后可重新读取，恢复默认只影响指定项', async () => {
     const h = createHarness();
     const initial = (await h.call('GET', '/api/settings')).body;
@@ -73,9 +97,9 @@ describe('两个内容引导词设置', () => {
     await h.call('PUT', '/api/settings', CUSTOM);
     expect(loadPool(h.db)).toHaveLength(0);
     for (const item of unused) expect(h.db.select().from(items).where(eq(items.id, item.id)).get()!.status).toBe('void');
-    const resumed = (await h.call('POST', '/api/sessions/next')).body;
+    const resumed = (await h.call('POST', '/api/sessions/next', { resume: true })).body;
     expect(resumed.resumed).toBe(true);
-    expect(resumed.session).toEqual(active);
+    expect(resumed.session.id).toBe(active.id);
   });
 
   it('同样的引导词和无关设置不会让已备好的内容失效', async () => {
@@ -151,6 +175,7 @@ describe('两个内容引导词设置', () => {
     await h.call('PUT', '/api/settings', latest);
     held.release();
     await running;
+    // 本轮补池一旦发现配置变化就中止，不保存与基线不一致的内容
     expect(loadPool(h.db)).toHaveLength(0);
     const before = h.requests.length;
     await h.worker.runUntilIdle();
@@ -216,267 +241,211 @@ describe('两个内容引导词设置', () => {
   });
 });
 
-describe('学科内容风格', () => {
-  /** 两个不同学科的主题，各自打上标签 */
-  async function twoSubjects(h: ReturnType<typeof createHarness>) {
-    const dsp = await h.startTopic('离散时间信号');
-    const esp = await h.startTopic('西班牙语动词变位');
-    await h.call('PATCH', `/api/topics/${dsp}`, { subject: '数字信号处理' });
-    await h.call('PATCH', `/api/topics/${esp}`, { subject: '西班牙语' });
-    return { dsp, esp };
-  }
-
-  it('设置接口给出全部预设及其说明', async () => {
+describe('教学预设目录', () => {
+  it('设置接口给出全部预设及其说明与原文', async () => {
     const h = createHarness();
     const view = (await h.call('GET', '/api/settings')).body;
-    expect(view.subjectStyles.length).toBeGreaterThanOrEqual(9);
-    const ids = view.subjectStyles.map((s: any) => s.id);
+    expect(view.teachingPresets.length).toBeGreaterThanOrEqual(9);
+    const ids = view.teachingPresets.map((s: any) => s.id);
     expect(ids).toContain('default');
     expect(ids).toContain('stem');
     expect(ids).toContain('language');
-    expect(view.subjectStyles.every((s: any) => s.label && s.description)).toBe(true);
+    expect(view.teachingPresets.every((s: any) => s.label && s.description && typeof s.version === 'number')).toBe(true);
+    // 兼容别名：旧界面与测试按 subjectStyles 读取同一份目录
+    expect(view.subjectStyles).toEqual(view.teachingPresets);
   });
 
-  it('非法预设名被拒绝', async () => {
-    const h = createHarness();
-    expect((await h.call('PUT', '/api/settings', { subjectGroups: [{ name: '语言', styleId: 'quantum', subjects: ['西语'] }] })).status).toBe(400);
-    expect((await h.call('PUT', '/api/settings', { subjectGroups: [{ name: '语言', styleId: 'language', subjects: ['西语'] }] })).status).toBe(200);
-  });
-
-  it('学科汇总里带上当前选定的风格', async () => {
-    const h = createHarness();
-    await twoSubjects(h);
-    await h.call('PUT', '/api/settings', { subjectGroups: [{ name: '语言', styleId: 'language', subjects: ['西班牙语'] }] });
-    const { subjects } = (await h.call('GET', '/api/subjects')).body;
-    expect(subjects.find((s: any) => s.subject === '西班牙语').styleId).toBe('language');
-    expect(subjects.find((s: any) => s.subject === '数字信号处理').styleId).toBe('default');
-  });
-
-  it('切换某学科的风格时，只作废这个学科的内容，其他学科不受影响', async () => {
-    const h = createHarness();
-    await twoSubjects(h);
-    await h.worker.runUntilIdle();
-    const before = loadPool(h.db);
-    expect(before.length).toBeGreaterThan(0);
-
-    // 记录每个候选项属于哪个学科
-    const subjectOfPoint = new Map<string, string | null>();
-    for (const row of h.db.select({ id: knowledgePoints.id, subject: topics.subject }).from(knowledgePoints).innerJoin(topics, eq(knowledgePoints.topicId, topics.id)).all()) {
-      subjectOfPoint.set(row.id, row.subject);
-    }
-    const languageItems = before.filter((i) => subjectOfPoint.get(i.knowledgePointId) === '西班牙语');
-    const others = before.filter((i) => subjectOfPoint.get(i.knowledgePointId) !== '西班牙语');
-    expect(languageItems.length).toBeGreaterThan(0);
-    expect(others.length).toBeGreaterThan(0);
-
-    await h.call('PUT', '/api/settings', { subjectGroups: [{ name: '语言', styleId: 'language', subjects: ['西班牙语'] }] });
-
-    const after = loadPool(h.db);
-    // 语言学科的内容被作废，其他学科的内容保持可用
-    expect(after.some((i) => subjectOfPoint.get(i.knowledgePointId) === '西班牙语')).toBe(false);
-    for (const item of others) {
-      expect(after.some((i) => i.id === item.id)).toBe(true);
-    }
-    for (const item of languageItems) {
-      expect(h.db.select().from(items).where(eq(items.id, item.id)).get()!.status).toBe('void');
-    }
-  });
-
-  it('改成同一个风格不会让内容失效', async () => {
-    const h = createHarness();
-    await twoSubjects(h);
-    await h.call('PUT', '/api/settings', { subjectGroups: [{ name: '语言', styleId: 'language', subjects: ['西班牙语'] }] });
-    await h.worker.runUntilIdle();
-    const before = loadPool(h.db);
-    expect(before.length).toBeGreaterThan(0);
-    await h.call('PUT', '/api/settings', { subjectGroups: [{ name: '语言', styleId: 'language', subjects: ['西班牙语'] }] });
-    expect(loadPool(h.db)).toEqual(before);
-  });
-
-  it('生成内容时按学科使用对应的风格提示词', async () => {
-    const h = createHarness();
-    await twoSubjects(h);
-    await h.call('PUT', '/api/settings', { subjectGroups: [{ name: '语言', styleId: 'language', subjects: ['西班牙语'] }, { name: '理工科', styleId: 'stem', subjects: ['数字信号处理'] }] });
-    h.requests.length = 0;
-    await h.worker.runUntilIdle();
-
-    const systems = h.requests.map((r) => r.system ?? '');
-    expect(systems.length).toBeGreaterThan(0);
-    // 语言主题的讲解带语言学科要求，理工科主题带公式与量纲要求
-    expect(systems.some((s) => s.includes('语言学习'))).toBe(true);
-    expect(systems.some((s) => s.includes('理工科'))).toBe(true);
-    // 每个请求都保留通用写作原则：预设只追加不替换
-    for (const s of systems) expect(s).toContain('写作原则');
-  });
-});
-
-describe('学科分组：大类定风格，下面挂多门课', () => {
-  it('同一分组下的多门课共用一套风格；换分组后随之改变', async () => {
-    const h = createHarness();
-    const dsp = await h.startTopic('离散时间信号');
-    const hyd = await h.startTopic('阀控缸');
-    const esp = await h.startTopic('西班牙语动词变位');
-    for (const [id, subject] of [[dsp, '数字信号处理'], [hyd, '液压传动'], [esp, '西班牙语']] as const) {
-      await h.call('PATCH', `/api/topics/${id}`, { subject });
-    }
-
-    // 理工科大组选 stem，把两门专业课都挂进去
-    const saved = (await h.call('PUT', '/api/settings', {
-      subjectGroups: [
-        { name: '理工科', styleId: 'stem', subjects: ['数字信号处理', '液压传动'] },
-        { name: '语言', styleId: 'language', subjects: ['西班牙语'] },
-      ],
-    })).body;
-    expect(saved.subjectGroups.find((g: any) => g.name === '理工科').subjects).toEqual(['数字信号处理', '液压传动']);
-
-    // 学科汇总带出所属分组
-    const { subjects } = (await h.call('GET', '/api/subjects')).body;
-    expect(subjects.find((s: any) => s.subject === '数字信号处理').group).toBe('理工科');
-    expect(subjects.find((s: any) => s.subject === '液压传动').group).toBe('理工科');
-    expect(subjects.find((s: any) => s.subject === '西班牙语').group).toBe('语言');
-    // 同组的风格一致
-    expect(subjects.find((s: any) => s.subject === '数字信号处理').styleId).toBe('stem');
-    expect(subjects.find((s: any) => s.subject === '液压传动').styleId).toBe('stem');
-  });
-
-  it('把标签从一个分组挪到另一个分组，风格跟着变，并只作废这些课的内容', async () => {
-    const h = createHarness();
-    const dsp = await h.startTopic('离散时间信号');
-    const esp = await h.startTopic('西班牙语动词变位');
-    await h.call('PATCH', `/api/topics/${dsp}`, { subject: '数字信号处理' });
-    await h.call('PATCH', `/api/topics/${esp}`, { subject: '西班牙语' });
-    await h.call('PUT', '/api/settings', {
-      subjectGroups: [
-        { name: '理工科', styleId: 'stem', subjects: ['数字信号处理'] },
-        { name: '语言', styleId: 'language', subjects: ['西班牙语'] },
-      ],
-    });
-    await h.worker.runUntilIdle();
-    const before = loadPool(h.db);
-    expect(before.length).toBeGreaterThan(0);
-
-    // 把西语从"语言"挪到"理工科"
-    await h.call('PUT', '/api/settings', {
-      subjectGroups: [
-        { name: '理工科', styleId: 'stem', subjects: ['数字信号处理', '西班牙语'] },
-        { name: '语言', styleId: 'language', subjects: [] },
-      ],
-    });
-    const { subjects } = (await h.call('GET', '/api/subjects')).body;
-    expect(subjects.find((s: any) => s.subject === '西班牙语').group).toBe('理工科');
-    expect(subjects.find((s: any) => s.subject === '西班牙语').styleId).toBe('stem');
-    // 西语从 language 变成 stem，内容需要重新准备
-    expect(loadPool(h.db).length).toBeLessThan(before.length);
-  });
-
-  it('分组名为空或重名时被拒绝', async () => {
-    const h = createHarness();
-    expect((await h.call('PUT', '/api/settings', { subjectGroups: [{ name: '  ', styleId: 'stem', subjects: [] }] })).status).toBe(400);
-  });
-});
-
-describe('单个标签单独指定风格', () => {
-  it('标签自己的风格优先于分组，且只作废这个标签的内容', async () => {
-    const h = createHarness();
-    const hyd = await h.startTopic('阀控缸');
-    const dsp = await h.startTopic('离散时间信号');
-    await h.call('PATCH', `/api/topics/${hyd}`, { subject: '液压传动' });
-    await h.call('PATCH', `/api/topics/${dsp}`, { subject: '数字信号处理' });
-    await h.call('PUT', '/api/settings', {
-      subjectGroups: [{ name: '理工科', styleId: 'stem', subjects: ['液压传动', '数字信号处理'] }],
-    });
-    await h.worker.runUntilIdle();
-    const before = loadPool(h.db);
-    expect(before.length).toBeGreaterThan(0);
-
-    // 只给液压传动单独指定风格
-    await h.call('PUT', '/api/settings', { tagStyles: { 液压传动: 'programming' } });
-
-    const { subjects } = (await h.call('GET', '/api/subjects')).body;
-    const hydRow = subjects.find((s: any) => s.subject === '液压传动');
-    const dspRow = subjects.find((s: any) => s.subject === '数字信号处理');
-    expect(hydRow.styleId).toBe('programming');
-    expect(hydRow.ownStyle).toBe(true);
-    expect(dspRow.styleId).toBe('stem');
-    expect(dspRow.ownStyle).toBe(false);
-
-    // 液压传动的内容被重新准备，数字信号处理的保留
-    const subjectOfPoint = new Map<string, string | null>();
-    for (const row of h.db.select({ id: knowledgePoints.id, subject: topics.subject }).from(knowledgePoints).innerJoin(topics, eq(knowledgePoints.topicId, topics.id)).all()) {
-      subjectOfPoint.set(row.id, row.subject);
-    }
-    const after = loadPool(h.db);
-    expect(after.some((i) => subjectOfPoint.get(i.knowledgePointId) === '液压传动')).toBe(false);
-    expect(after.some((i) => subjectOfPoint.get(i.knowledgePointId) === '数字信号处理')).toBe(true);
-  });
-
-  it('取消单独指定后重新跟随分组', async () => {
-    const h = createHarness();
-    const hyd = await h.startTopic('阀控缸');
-    await h.call('PATCH', `/api/topics/${hyd}`, { subject: '液压传动' });
-    await h.call('PUT', '/api/settings', { subjectGroups: [{ name: '理工科', styleId: 'stem', subjects: ['液压传动'] }] });
-    await h.call('PUT', '/api/settings', { tagStyles: { 液压传动: 'arts' } });
-    let row = (await h.call('GET', '/api/subjects')).body.subjects.find((s: any) => s.subject === '液压传动');
-    expect(row.styleId).toBe('arts');
-
-    await h.call('PUT', '/api/settings', { tagStyles: {} });
-    row = (await h.call('GET', '/api/subjects')).body.subjects.find((s: any) => s.subject === '液压传动');
-    expect(row.styleId).toBe('stem');
-    expect(row.ownStyle).toBe(false);
-  });
-});
-
-describe('部分更新设置不会冲掉其他配置', () => {
-  it('只改标签覆盖时，已保存的分组和引导词保持不变', async () => {
-    const h = createHarness();
-    const hyd = await h.startTopic('阀控缸');
-    await h.call('PATCH', `/api/topics/${hyd}`, { subject: '液压传动' });
-    const grouping = [{ name: '理工科', styleId: 'stem', subjects: ['液压传动'] }];
-    await h.call('PUT', '/api/settings', { subjectGroups: grouping, tutorialGuidance: CUSTOM.tutorialGuidance });
-
-    await h.call('PUT', '/api/settings', { tagStyles: { 液压传动: 'programming' } });
-
-    const saved = (await h.call('GET', '/api/settings')).body.settings;
-    expect(saved.subjectGroups).toEqual(grouping);
-    expect(saved.tutorialGuidance).toBe(CUSTOM.tutorialGuidance);
-    expect(saved.tagStyles).toEqual({ 液压传动: 'programming' });
-  });
-
-  it('只改学习节奏时，分组与标签覆盖都保留', async () => {
-    const h = createHarness();
-    await h.call('PUT', '/api/settings', {
-      subjectGroups: [{ name: '理工科', styleId: 'stem', subjects: ['液压传动'] }],
-      tagStyles: { 液压传动: 'arts' },
-    });
-    await h.call('PUT', '/api/settings', { sessionMinutes: 15 });
-
-    const saved = (await h.call('GET', '/api/settings')).body.settings;
-    expect(saved.sessionMinutes).toBe(15);
-    expect(saved.subjectGroups).toHaveLength(1);
-    expect(saved.tagStyles).toEqual({ 液压传动: 'arts' });
-  });
-});
-
-describe('设置接口给出各风格的完整要求', () => {
-  it('每个预设都带 tutorial 与 figure 原文，通用风格为空', async () => {
+  it('每个预设都带 tutorial 与 figure 原文，通用预设为空', async () => {
     const h = createHarness();
     const view = (await h.call('GET', '/api/settings')).body;
-    const byId = new Map(view.subjectStyles.map((s: any) => [s.id, s]));
+    const byId = new Map(view.teachingPresets.map((s: any) => [s.id, s]));
     expect((byId.get('default') as any).tutorial).toBe('');
     expect((byId.get('default') as any).figure).toBe('');
     for (const id of ['stem', 'programming', 'language', 'humanities', 'business', 'law', 'medicine', 'arts']) {
       const style = byId.get(id) as any;
       expect(style.tutorial.length).toBeGreaterThan(100);
       expect(style.figure.length).toBeGreaterThan(20);
-      // 学科要求要能看出是哪个学科，便于用户在预览里确认
       expect(style.tutorial).toContain('学科补充要求');
     }
   });
 
-  it('不同风格的追加内容互不相同', async () => {
+  it('不同预设的追加内容互不相同', async () => {
     const h = createHarness();
     const view = (await h.call('GET', '/api/settings')).body;
-    const texts = view.subjectStyles.filter((s: any) => s.id !== 'default').map((s: any) => s.tutorial);
+    const texts = view.teachingPresets.filter((s: any) => s.id !== 'default').map((s: any) => s.tutorial);
     expect(new Set(texts).size).toBe(texts.length);
+  });
+});
+
+describe('教学预设只对所属课程生效', () => {
+  /** 两门课程：语言（西班牙语）与理工科（数字信号处理） */
+  async function twoCourses(h: ReturnType<typeof createHarness>) {
+    const language = await makeCourse(h, '语言', 'language', '西班牙语');
+    const stem = await makeCourse(h, '理工科', 'stem', '数字信号处理');
+    const esp = await h.startTopic('西班牙语动词变位');
+    const dsp = await h.startTopic('离散时间信号');
+    await assign(h, language.courseId, [esp]);
+    await assign(h, stem.courseId, [dsp]);
+    // 归属变化会作废旧候选内容并重新备课：等后台按新预设备好
+    await h.worker.runUntilIdle();
+    return { language, stem, esp, dsp };
+  }
+
+  it('生成内容时按课程所属学科的预设追加要求，共用规则始终保留', async () => {
+    const h = createHarness();
+    // twoCourses 在归入课程后会按新预设备课，这些请求就是本测试要检查的内容
+    await twoCourses(h);
+
+    const systems = h.requests.filter((r) => r.name === 'lesson' || r.name === 'review').map((r) => r.system ?? '');
+    expect(systems.length).toBeGreaterThan(0);
+    expect(systems.some((s) => s.includes('语言学习'))).toBe(true);
+    expect(systems.some((s) => s.includes('理工科'))).toBe(true);
+    for (const s of systems) expect(s).toContain('写作原则');
+  });
+
+  it('只有真正受影响的课程内容被作废，其他课程保持可用', async () => {
+    const h = createHarness();
+    const { language, stem } = await twoCourses(h);
+    const before = loadPool(h.db);
+    expect(before.length).toBeGreaterThan(0);
+    const courseOf = courseOfPoint(h);
+    const languageItems = before.filter((i) => courseOf(i.knowledgePointId) === language.courseId);
+    const others = before.filter((i) => courseOf(i.knowledgePointId) !== language.courseId);
+    expect(languageItems.length).toBeGreaterThan(0);
+    expect(others.length).toBeGreaterThan(0);
+
+    // 只改语言学科的内容风格
+    const res = await h.call('PATCH', `/api/disciplines/${language.disciplineId}`, { presetId: 'humanities', confirmed: true });
+    expect(res.status).toBe(200);
+
+    const after = loadPool(h.db);
+    expect(after.some((i) => courseOf(i.knowledgePointId) === language.courseId)).toBe(false);
+    for (const item of others) expect(after.some((i) => i.id === item.id)).toBe(true);
+    for (const item of languageItems) {
+      expect(h.db.select().from(items).where(eq(items.id, item.id)).get()!.status).toBe('void');
+    }
+    expect(stem.courseId).not.toBe(language.courseId);
+  });
+
+  it('预设没变的改名或移动不会让内容失效', async () => {
+    const h = createHarness();
+    const { language } = await twoCourses(h);
+    const before = loadPool(h.db);
+    expect(before.length).toBeGreaterThan(0);
+
+    // 改名：不影响讲法
+    expect((await h.call('PATCH', `/api/disciplines/${language.disciplineId}`, { name: '外语' })).status).toBe(200);
+    expect((await h.call('PATCH', `/api/courses/${language.courseId}`, { name: '西班牙语进阶' })).status).toBe(200);
+    expect(loadPool(h.db)).toEqual(before);
+
+    // 移到同为 language 预设的另一个学科：讲法没变，内容仍可用
+    const other = (await h.call('POST', '/api/disciplines', { name: '语言二类', presetId: 'language' })).body;
+    expect((await h.call('PATCH', `/api/courses/${language.courseId}`, { disciplineId: other.id })).status).toBe(200);
+    expect(loadPool(h.db)).toEqual(before);
+  });
+
+  it('按课程预览的提示词与生成端解析结果逐字一致', async () => {
+    const h = createHarness();
+    const { language, stem } = await twoCourses(h);
+    await h.call('PUT', '/api/settings', CUSTOM);
+    h.requests.length = 0;
+    await h.worker.runUntilIdle();
+    const languageView = (await h.call('GET', `/api/courses/${language.courseId}/guidance`)).body;
+    const stemView = (await h.call('GET', `/api/courses/${stem.courseId}/guidance`)).body;
+
+    const lessons = h.requests.filter((r) => r.name === 'lesson');
+    expect(lessons.length).toBeGreaterThan(0);
+    // 每个学科的讲解提示词都应逐字包含对应课程的预览，且不混入别的课程要求
+    for (const request of lessons) {
+      const matchesLanguage = request.system?.includes(languageView.tutorialGuidance) ?? false;
+      const matchesStem = request.system?.includes(stemView.tutorialGuidance) ?? false;
+      expect(matchesLanguage || matchesStem).toBe(true);
+      if (matchesLanguage) {
+        expect(request.prompt).toContain(languageView.figureGuidance);
+        expect(request.system).not.toContain('学科补充要求：理工科');
+      } else {
+        expect(request.prompt).toContain(stemView.figureGuidance);
+        expect(request.system).not.toContain('学科补充要求：语言学习');
+      }
+    }
+    expect(lessons.some((r) => r.system?.includes(languageView.tutorialGuidance))).toBe(true);
+    expect(lessons.some((r) => r.system?.includes(stemView.tutorialGuidance))).toBe(true);
+  });
+});
+
+describe('停用的旧分类设置必须明确失败，而不是继续生效', () => {
+  it('写入分组/标签覆盖/扁平映射时返回 400 并给出迁移指引', async () => {
+    const h = createHarness();
+    for (const legacy of [
+      { subjectGroups: [{ name: '语言', styleId: 'language', subjects: ['西语'] }] },
+      { tagStyles: { 液压传动: 'programming' } },
+      { subjectStyles: { 西语: 'language' } },
+    ]) {
+      const res = await h.call('PUT', '/api/settings', legacy);
+      expect(res.status).toBe(400);
+      expect(res.body.error).toContain('学科与课程');
+    }
+  });
+
+  it('同一次请求里既改节奏又带旧字段时，整次失败且不改动已保存的配置', async () => {
+    const h = createHarness();
+    await h.call('PUT', '/api/settings', { sessionMinutes: 12 });
+    const res = await h.call('PUT', '/api/settings', { sessionMinutes: 20, tagStyles: { x: 'stem' } });
+    expect(res.status).toBe(400);
+    expect(readUserSettings(h.db, {}).sessionMinutes).toBe(12);
+  });
+
+  it('已存储的旧字段被保留为迁移快照，不会被后续保存抹掉', async () => {
+    const h = createHarness();
+    h.db.insert(appSettings).values({
+      key: 'user_settings',
+      value: { sessionMinutes: 15, subjectGroups: [{ name: '语言', styleId: 'language', subjects: ['西语'] }], tagStyles: { 西语: 'arts' } },
+      updatedAt: DAY1,
+    }).run();
+    // 旧字段不参与运行期配置
+    expect(settingsSource(h.db, {})().contentGuidance).toEqual(DEFAULT_CONTENT_GUIDANCE);
+    await h.call('PUT', '/api/settings', { sessionMinutes: 18 });
+    const stored = h.db.select().from(appSettings).where(eq(appSettings.key, 'user_settings')).get()!.value as Record<string, unknown>;
+    expect(stored.subjectGroups).toEqual([{ name: '语言', styleId: 'language', subjects: ['西语'] }]);
+    expect(stored.tagStyles).toEqual({ 西语: 'arts' });
+    expect(stored.sessionMinutes).toBe(18);
+  });
+
+  it('单个字段被改坏时只让这一项回到默认，其余偏好保留', async () => {
+    const h = createHarness();
+    h.db.insert(appSettings).values({
+      key: 'user_settings',
+      value: { sessionMinutes: 17, reminderTimes: ['25:00'], tutorialGuidance: '自定义引导词', unknownField: true },
+      updatedAt: DAY1,
+    }).run();
+    const read = readUserSettings(h.db, {});
+    expect(read.sessionMinutes).toBe(17);
+    expect(read.reminderTimes).toEqual([]);
+    expect(read.tutorialGuidance).toBe('自定义引导词');
+  });
+
+  it('补丁 schema 从字段定义派生：缺省字段不会被补成默认值', () => {
+    expect(UserSettingsPatchSchema.parse({ sessionMinutes: 15 })).toEqual({ sessionMinutes: 15 });
+    expect(UserSettingsPatchSchema.safeParse({ sessionMinutes: 1 }).success).toBe(false);
+    expect(UserSettingsPatchSchema.safeParse({ blockedForms: ['fix'] }).success).toBe(false);
+  });
+});
+
+describe('教学配置指纹', () => {
+  it('相同内容得到相同指纹；预设或引导词变化后指纹改变', () => {
+    const base = DEFAULT_CONTENT_GUIDANCE;
+    const a = teachingFingerprint('stem', base);
+    expect(teachingFingerprint('stem', base)).toBe(a);
+    expect(teachingFingerprint('language', base)).not.toBe(a);
+    expect(teachingFingerprint('stem', { ...base, tutorialGuidance: `${base.tutorialGuidance}\n补充` })).not.toBe(a);
+  });
+
+  it('指纹不含学科名与课程名：改名不影响', async () => {
+    const h = createHarness();
+    const { disciplineId, courseId } = await makeCourse(h, '语言', 'language', '西班牙语');
+    const before = (await h.call('GET', `/api/courses/${courseId}/guidance`)).body.fingerprint;
+    await h.call('PATCH', `/api/disciplines/${disciplineId}`, { name: '外语' });
+    await h.call('PATCH', `/api/courses/${courseId}`, { name: '西班牙语进阶' });
+    expect((await h.call('GET', `/api/courses/${courseId}/guidance`)).body.fingerprint).toBe(before);
   });
 });

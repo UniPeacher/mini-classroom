@@ -1,14 +1,17 @@
 import { useEffect, useState } from 'react';
-import { type Session, type Topic, api, devNow } from './api';
+import { type Session, api, devNow } from './api';
 import { Icon, type IconName, Mark } from './components/Icon';
-import { useResource } from './hooks';
 import { useReminders } from './reminders';
-import { type Route, navigate, routeHash, useRoute } from './router';
+import { UnsavedChangesDialog } from './components/UnsavedChangesDialog';
+import { type Route, navigate, routeHash, todayHash, useNavigationGuard, useRoute } from './router';
+import { OrganizationProvider, useOrganization } from './organization';
+import { useBeforeUnloadGuard } from './drafts';
 import { DayReviewPage } from './screens/DayReviewPage';
 import { HomeScreen } from './screens/HomeScreen';
 import { LearnScreen } from './screens/LearnScreen';
 import { LibraryScreen } from './screens/LibraryScreen';
 import { MapScreen } from './screens/MapScreen';
+import { OrganizationScreen } from './screens/OrganizationScreen';
 import { PersonalizationScreen } from './screens/PersonalizationScreen';
 import { SettingsScreen } from './screens/SettingsScreen';
 import { TodayScreen } from './screens/TodayScreen';
@@ -20,8 +23,9 @@ import './styles.css';
 
 const NAV: { route: Route; label: string; icon: IconName }[] = [
   { route: { name: 'home' }, label: '首页', icon: 'home' },
-  { route: { name: 'today' }, label: '今天', icon: 'today' },
+  { route: { name: 'today', scope: { kind: 'all' } }, label: '今天', icon: 'today' },
   { route: { name: 'map' }, label: '认知地图', icon: 'map' },
+  { route: { name: 'organization' }, label: '学科与课程', icon: 'books' },
   { route: { name: 'library' }, label: '速查表与导出', icon: 'library' },
 ];
 
@@ -38,19 +42,29 @@ const TITLES: Record<Route['name'], string> = {
   topic: '学习主题',
   'topic-draft': '明确学习目标',
   library: '速查表与导出',
+  organization: '学科与课程',
   settings: '设置',
   personalization: '个性化',
   review: '按天回看',
 };
 
 export function App() {
+  return (
+    <OrganizationProvider>
+      <AppShell />
+    </OrganizationProvider>
+  );
+}
+
+function AppShell() {
   const route = useRoute();
   const [devMode, setDevMode] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   // 开始的一节放在内存里；刷新学习页时由服务端恢复未完成的一节
   const [session, setSession] = useState<{ session: Session; notice?: string } | null>(null);
-  const topics = useResource(() => api.listTopics().then((r) => r.topics), [route.name]);
   useReminders();
+  useBeforeUnloadGuard();
+  useNavigationGuard(route);
 
   useEffect(() => {
     api.health().then((h) => setDevMode(h.devMode), () => setDevMode(false));
@@ -79,12 +93,18 @@ export function App() {
         </div>
         <div className="sidebar-scroll">
           {NAV.map((item) => (
-            <a key={item.label} className="nav-item" href={routeHash(item.route)} aria-current={isCurrent(route, item.route) ? 'page' : undefined}>
+            <a
+              key={item.label}
+              className="nav-item"
+              /* 今天页回到上次选过的范围，不重置成全部 */
+              href={item.route.name === 'today' ? todayHash() : routeHash(item.route)}
+              aria-current={isCurrent(route, item.route) ? 'page' : undefined}
+            >
               <Icon name={item.icon} />
               {item.label}
             </a>
           ))}
-          <TopicNav topics={topics.data ?? []} route={route} />
+          <OrganizationNav route={route} />
         </div>
         <div className="sidebar-bottom">
           {devMode && <DevClock />}
@@ -108,52 +128,98 @@ export function App() {
           <span style={{ width: 8 }} />
         </header>
         <main className="canvas">
-          {route.name === 'home' && <HomeScreen topics={topics.data} topicsError={topics.error} onTopicsChanged={topics.reload} onStart={startSession} />}
-          {route.name === 'today' && <TodayScreen topics={topics.data} onTopicsChanged={topics.reload} onStart={startSession} />}
+          {route.name === 'home' && <HomeScreen onStart={startSession} />}
+          {route.name === 'today' && <TodayScreen scope={route.scope} onStart={startSession} />}
           {route.name === 'learn' && <LearnScreen initial={session} onDone={() => setSession(null)} />}
           {route.name === 'map' && <MapScreen pointId={route.pointId} />}
-          {route.name === 'topic' && <TopicScreen key={route.topicId} topicId={route.topicId} onTopicsChanged={topics.reload} />}
-          {route.name === 'topic-draft' && <TopicPlanningScreen key={route.draftId} draftId={route.draftId} onTopicsChanged={topics.reload} />}
+          {route.name === 'topic' && <TopicScreen key={route.topicId} topicId={route.topicId} />}
+          {route.name === 'topic-draft' && <TopicPlanningScreen key={route.draftId} draftId={route.draftId} />}
           {route.name === 'library' && <LibraryScreen cheatsheetId={route.cheatsheetId} />}
+          {route.name === 'organization' && <OrganizationScreen disciplineId={route.disciplineId} courseId={route.courseId} unclassified={route.unclassified} />}
           {route.name === 'settings' && <SettingsScreen />}
           {route.name === 'personalization' && <PersonalizationScreen tab={route.tab} />}
         </main>
       </div>
+      <UnsavedChangesDialog />
     </div>
   );
 }
 
 function isCurrent(route: Route, target: Route): boolean {
   if (target.name === 'today') return route.name === 'today' || route.name === 'learn';
+  if (target.name === 'organization') return route.name === 'organization';
   return route.name === target.name;
 }
 
 const PLACEMENT_STATE: Record<string, string> = { pending: '待摸底', preparing: '准备摸底', testing: '摸底中' };
 
-/** 侧栏里的学习主题：每个主题是一个页面 */
-function TopicNav({ topics, route }: { topics: Topic[]; route: Route }) {
-  if (topics.length === 0) return null;
-  const stateOf = (t: Topic) => {
-    if (t.graphStatus === 'pending') return '生成中';
-    if (t.graphStatus === 'failed') return '生成失败';
-    if (t.status === 'paused') return '暂停';
-    return PLACEMENT_STATE[t.placementStatus] ?? '';
+/**
+ * 侧栏里的学习主题：按「学科 → 课程 → 主题」排，与首页、管理页用同一份组织快照，
+ * 改名、移动课程后侧栏立即跟着变，不会停留在旧的推导结果上。
+ */
+function OrganizationNav({ route }: { route: Route }) {
+  const { data, error, loading, reload } = useOrganization();
+  if (loading && !data) return <p className="muted small sidebar-status">正在读取学习主题…</p>;
+  if (error) return (
+    <p className="error-text small sidebar-status" role="alert">
+      没能读取学习主题：{error}{' '}
+      <button type="button" className="card-link" onClick={() => void reload()}>重新加载</button>
+    </p>
+  );
+  if (!data) return null;
+  const hasAny = data.totals.topics > 0;
+  if (!hasAny) return null;
+  const stateOf = (topic: (typeof data.unclassified)[number]) => {
+    if (topic.graphStatus === 'pending') return '生成中';
+    if (topic.graphStatus === 'failed') return '生成失败';
+    if (topic.status === 'paused') return '暂停';
+    return PLACEMENT_STATE[topic.placementStatus ?? ''] ?? '';
   };
+  const topicLink = (topic: (typeof data.unclassified)[number]) => (
+    <a
+      key={topic.id}
+      className="nav-item"
+      href={routeHash({ name: 'topic', topicId: topic.id })}
+      aria-current={route.name === 'topic' && route.topicId === topic.id ? 'page' : undefined}
+    >
+      <Icon name="topic" />
+      <span className="topic-name">{topic.title}</span>
+      <span className="count">{stateOf(topic)}</span>
+    </a>
+  );
   return (
     <>
-      <div className="group-label">学习主题</div>
-      {topics.map((t) => (
-        <a
-          key={t.id}
-          className="nav-item"
-          href={routeHash({ name: 'topic', topicId: t.id })}
-          aria-current={route.name === 'topic' && route.topicId === t.id ? 'page' : undefined}
-        >
-          <Icon name="topic" />
-          <span className="topic-name">{t.title}</span>
-          <span className="count">{stateOf(t)}</span>
-        </a>
+      {data.disciplines.map((node) => (
+        <div key={node.discipline.id} className="nav-discipline">
+          <div className="group-label">{node.discipline.name}</div>
+          {node.courses.map((courseNode) => (
+            <div key={courseNode.course.id} className="nav-course">
+              <a
+                className="nav-item nav-course-item"
+                href={routeHash({ name: 'organization', courseId: courseNode.course.id })}
+                aria-current={route.name === 'organization' && route.courseId === courseNode.course.id ? 'page' : undefined}
+              >
+                <Icon name="book" />
+                <span className="topic-name">{courseNode.course.name}</span>
+                <span className="count">{courseNode.counts.topics}</span>
+              </a>
+              {courseNode.topics.map(topicLink)}
+            </div>
+          ))}
+        </div>
       ))}
+      {data.unclassified.length > 0 && (
+        <div className="nav-discipline">
+          <div className="group-label">未归类</div>
+          {data.unclassified.map(topicLink)}
+        </div>
+      )}
+      {data.orphanTopics.length > 0 && (
+        <div className="nav-discipline">
+          <div className="group-label">待整理</div>
+          {data.orphanTopics.map(topicLink)}
+        </div>
+      )}
     </>
   );
 }

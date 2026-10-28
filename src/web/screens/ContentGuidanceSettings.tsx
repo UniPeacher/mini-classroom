@@ -1,22 +1,26 @@
-import { useEffect, useState } from 'react';
-import { type SettingsView, type UserSettings, api } from '../api';
+import { useEffect, useMemo, useState } from 'react';
+import { type CourseGuidance, type SettingsView, type TeachingPreset, type UserSettings, api } from '../api';
 import { Section } from '../components/SettingsSection';
+import { useResource } from '../hooks';
+import { coursePath, useOrganization } from '../organization';
 
 interface ContentGuidanceSettingsProps {
   settings: UserSettings;
   defaults: SettingsView['guidanceDefaults'];
   maxLength: number;
-  /** 选中某个学科风格时，预览它实际会用到的完整引导词 */
-  preview?: { label: string; tutorial: string; figure: string } | null;
+  /** 保存全局共用表达规则；学科追加要求由后端预设提供，不在这里合并 */
   onSaved: (settings: UserSettings) => void;
+  /** 有未保存修改时通知外层，用于离开页面提醒 */
+  onDirtyChange?: (dirty: boolean) => void;
+  /** 九套教学预设目录，仅浏览；来自设置接口 */
+  presets?: TeachingPreset[];
 }
 
 /**
- * 教程和配图共用一个保存入口，长文本编辑完成后再生效。
- * 这里编辑的始终是"全局引导词"；学科风格的要求在生成时追加在它后面，
- * 所以有学科时额外展示一份合并后的预览，避免让人以为切换风格没生效。
+ * 共用表达规则：教程和配图两份全局引导词，显式保存后生效。
+ * 这里编辑的始终是全局文本；学科追加的要求由服务端按课程解析，不在这里拼接，也不声称是完整系统提示词。
  */
-export function ContentGuidanceSettings({ settings, defaults, maxLength, preview, onSaved }: ContentGuidanceSettingsProps) {
+export function ContentGuidanceSettings({ settings, defaults, maxLength, onSaved, onDirtyChange, presets }: ContentGuidanceSettingsProps) {
   const tutorialValue = settings.tutorialGuidance ?? defaults.tutorialGuidance;
   const figureValue = settings.figureGuidance ?? defaults.figureGuidance;
   const [tutorialDraft, setTutorialDraft] = useState(tutorialValue);
@@ -32,6 +36,10 @@ export function ContentGuidanceSettings({ settings, defaults, maxLength, preview
   const tutorialDirty = tutorialDraft !== tutorialValue;
   const figureDirty = figureDraft !== figureValue;
   const dirty = tutorialDirty || figureDirty;
+
+  useEffect(() => {
+    onDirtyChange?.(dirty);
+  }, [dirty, onDirtyChange]);
 
   function editTutorial(value: string) {
     setTutorialDraft(value);
@@ -59,6 +67,7 @@ export function ContentGuidanceSettings({ settings, defaults, maxLength, preview
       onSaved(saved);
       setStamp(`已保存 ${new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}`);
     } catch (e) {
+      // 保存失败保留编辑内容
       setError(`保存失败，编辑内容已保留。${(e as Error).message}`);
     } finally {
       setSaving(false);
@@ -67,26 +76,11 @@ export function ContentGuidanceSettings({ settings, defaults, maxLength, preview
 
   return (
     <Section
-      title="内容生成偏好"
-      description="用两份引导词告诉微课堂怎样讲、怎样画。可以直接修改下面的完整说明，保存后用于新生成的讲解、复习材料及其中的配图。"
+      title="共用表达规则"
+      description="所有学科共用的教程和配图写作原则。学科教学要求在生成时由教学内容配置追加在后面，不在这里修改。"
     >
-      {preview && (
-        <details className="guidance-preview">
-          <summary>
-            查看「{preview.label}」风格实际使用的完整引导词
-            <span className="muted small">（通用引导词 + 该学科追加的要求）</span>
-          </summary>
-          <p className="hint">
-            下面是生成内容时真正发给模型的文字。上半部分是全局通用引导词，下半部分是「{preview.label}」追加的学科要求。
-            学科风格只能选不能改；要改学科要求的具体内容，用下面的全局引导词补充。
-          </p>
-          <pre className="guidance-preview-text">{preview.tutorial}</pre>
-          <details>
-            <summary className="muted small">配图部分（{preview.figure.length} 字）</summary>
-            <pre className="guidance-preview-text">{preview.figure}</pre>
-          </details>
-        </details>
-      )}
+      <CourseGuidancePreview presets={presets ?? []} />
+      <PresetCatalog presets={presets ?? []} />
       <GuidanceEditor
         id="tutorial-guidance"
         title="教程引导词"
@@ -124,6 +118,113 @@ export function ContentGuidanceSettings({ settings, defaults, maxLength, preview
         <p className="muted small">保存后会重新准备尚未开始的课程，可能需要等待并产生模型调用费用；正在学习的课程和历史记录保持原样。</p>
       </div>
     </Section>
+  );
+}
+
+/**
+ * 九套教学预设目录：只读浏览，不写任何配置。
+ * 大类选预设是"学科与课程"页里的动作，这里只看说明与要求原文。
+ */
+export function PresetCatalog({ presets }: { presets: TeachingPreset[] }) {
+  if (presets.length === 0) return null;
+  return (
+    <div className="preset-catalog" aria-label="教学预设目录">
+      <h3>教学预设目录 <span className="muted small num">{presets.length}</span></h3>
+      <p className="muted small">只用于浏览。给学科选预设请到「学科与课程」，浏览不会更改保存的配置。</p>
+      <div className="preset-list">
+        {presets.map((preset) => (
+          <details key={preset.id} className="preset-item">
+            <summary>
+              <strong>{preset.label}</strong>
+              <span className="muted small">{preset.description}</span>
+            </summary>
+            <p className="hint">教程要求</p>
+            <pre className="guidance-preview-text">{preset.tutorial || '（无追加教程要求）'}</pre>
+            <p className="hint">配图要求</p>
+            <pre className="guidance-preview-text">{preset.figure || '（无追加配图要求）'}</pre>
+          </details>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * 实际教学配置预览：选择一门课程，读取服务端按课程解析出的引导词。
+ * 未归类/默认配置走同一个接口族的 sentinel 路径，前端不拼接、不近似。
+ */
+export function CourseGuidancePreview({ presets }: { presets: TeachingPreset[] }) {
+  const organization = useOrganization();
+  const [courseId, setCourseId] = useState('');
+  const [guidance, setGuidance] = useState<CourseGuidance | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+  const courses = useMemo(
+    () => organization.data?.disciplines.flatMap((node) => node.courses.map((courseNode) => ({ course: courseNode.course, disciplineName: node.discipline.name }))) ?? [],
+    [organization.data],
+  );
+
+  useEffect(() => {
+    let active = true;
+    setGuidance(null);
+    setError('');
+    setLoading(true);
+    const load = courseId ? api.courseGuidance(courseId) : api.unclassifiedGuidance();
+    load
+      .then((result) => { if (active) setGuidance(result); })
+      .catch((e: Error) => { if (active) setError(e.message); })
+      .finally(() => { if (active) setLoading(false); });
+    return () => { active = false; };
+  }, [courseId]);
+
+  return (
+    <div className="course-guidance" aria-label="实际教学配置预览">
+      <h3>实际教学引导词</h3>
+      <p className="muted small">选择一门课程，查看它此刻实际使用的教程与配图引导词。这里是教学引导词，不含任务上下文和输出格式。</p>
+      {organization.error && <p className="error-text" role="alert">没能读取课程列表：{organization.error}</p>}
+      <div className="actions-row" style={{ marginTop: 0 }}>
+        <label className="field" style={{ flex: '1 1 260px' }}>
+          <span className="label">选择课程</span>
+          <select className="select" value={courseId} onChange={(event) => setCourseId(event.target.value)}>
+            <option value="">未归类 / 默认配置</option>
+            {courses.map((item) => (
+              <option key={item.course.id} value={item.course.id}>{coursePath(organization.data, item.course.id)}</option>
+            ))}
+          </select>
+        </label>
+      </div>
+      {courses.length === 0 && <p className="muted small">还没有专业课程。可以先去「学科与课程」里建一个；默认配置始终可用。</p>}
+      {loading && <p className="muted" role="status">正在读取教学配置…</p>}
+      {error && <p className="error-text" role="alert">没能读取教学配置：{error}</p>}
+      {guidance && <GuidancePreviewCard guidance={guidance} />}
+    </div>
+  );
+}
+
+/**
+ * 预览内容：来源与合并后的引导词都来自服务端返回的那一份。
+ * 课程名、学科名、预设名一律照服务端给的显示，缺字段就如实留空，
+ * 不在这里回落到"未归类"之类的默认值——那会把课程的真实来源掩盖掉。
+ */
+export function GuidancePreviewCard({ guidance }: { guidance: CourseGuidance }) {
+  const source = guidance.courseId
+    ? [guidance.disciplineName, guidance.courseName].filter(Boolean).join(' / ')
+    : guidance.courseName;
+  return (
+    <div className="guidance-preview" aria-label={`${guidance.courseName} 的教学引导词`} data-guidance-course={guidance.courseId ?? 'unclassified'}>
+      <p className="muted small" data-testid="guidance-source">
+        来源：{source} · 预设「{guidance.presetLabel}」
+        <span className="chip" title="教学配置指纹">指纹 {guidance.fingerprint.slice(0, 8)}</span>
+      </p>
+      <details open>
+        <summary>教程引导词 <span className="muted small">（只读，服务端解析结果）</span></summary>
+        <pre className="guidance-preview-text">{guidance.tutorialGuidance}</pre>
+      </details>
+      <details>
+        <summary className="muted small">配图引导词（{guidance.figureGuidance.length} 字）</summary>
+        <pre className="guidance-preview-text">{guidance.figureGuidance}</pre>
+      </details>
+    </div>
   );
 }
 

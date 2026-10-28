@@ -2,9 +2,10 @@ import { randomUUID } from 'node:crypto';
 import { and, asc, desc, eq, inArray, isNotNull, isNull, ne } from 'drizzle-orm';
 import type { Illustrator, StructuredModel } from '../ai/gateway';
 import { gradeConnection, gradeOpenAnswer, judgeAppeal } from '../ai/generators';
+import { teachingContextLabel } from '../ai/teaching-context';
 import { type PoolItem, assemble } from '../domain/assemble';
 import { timeFactor } from '../domain/calibration';
-import { cognitiveEdge, prerequisitesSatisfied } from '../domain/edge';
+import { type GraphPoint, cognitiveEdge, prerequisitesSatisfied } from '../domain/edge';
 import { CONTRAST_FORM, type ExplainForm, type QuestionForm, isMobileForm } from '../domain/forms';
 import { gradeMcq, gradePickLine, misconceptionOf } from '../domain/grading';
 import {
@@ -20,15 +21,15 @@ import {
   needsDecomposition,
 } from '../domain/memory';
 import type { PoolNeed } from '../domain/plan-pool';
+import { ALL_SCOPE, type LearningScope, normalizeScope, sameScope, scopeIncludes } from '../domain/scope';
 import { chooseNewTopic, revisitDue } from '../domain/topics';
-import { settleWithLimit } from '../jobs/concurrency';
 import { fillPool } from '../jobs/fill-pool';
-import { contextOf, generateItem, saveGeneratedItem } from '../jobs/generate-item';
 import { enqueue } from '../jobs/queue';
-import { type Settings, guidanceForSubject, readState, writeState } from '../settings';
-import { groupOfTag, hasOwnStyle, type SubjectStyleId, styleIdOfTag } from '../shared/subject-styles';
+import { regenerateItems } from '../jobs/regenerate';
+import { type Settings, readState, writeState } from '../settings';
+import { isSubjectStyleId, type SubjectStyleId } from '../shared/subject-styles';
 import { type ConnectionContent, type Grade, type Question, isOpenQuestion } from '../shared/content';
-import { sameContentGuidance } from '../shared/content-guidance';
+import { invalidateChangedTopics, teachingFingerprints } from '../teaching';
 import type { Db } from '../store/db';
 import {
   type PointInfo,
@@ -44,7 +45,7 @@ import {
   saveState,
   wasDecomposed,
 } from '../store/repo';
-import { attempts, connections, items, jobs, memoryStates, sessionItems, sessions, topics } from '../store/schema';
+import { attempts, connections, courses, disciplines, items, jobs, knowledgePoints, memoryStates, sessionItems, sessions, topics } from '../store/schema';
 import {
   type Answer,
   type Appeal,
@@ -81,8 +82,25 @@ export interface NextSessionOptions {
   timeZone?: string;
   /** 构建新一节：提前结束未完成的一节；候选池没有可学内容时当场生成 */
   fresh?: boolean;
-  /** 只在指定学科内组装这一节；null 或省略时不限 */
+  /** 明确继续未完成的一节（不新建、不改动） */
+  resume?: boolean;
+  /** 组装范围：全部、某个学科或某门课程 */
+  scope?: LearningScope;
+  /** 请求是否明确带了范围；明确带范围时对未完成课堂的处理更严格 */
+  scopeProvided?: boolean;
+  /** 兼容旧接口：只在指定学科标签内组装；scope 存在时不再使用 */
   subject?: string | null;
+}
+
+/**
+ * 未完成的一节与请求的范围不一致（或请求没明确要继续）时抛出。
+ * 响应里带上未完成的一节的快照，让前端明确选择"继续旧的"或"新建"，
+ * 服务端不做任何破坏性操作。
+ */
+export class SessionConflictError extends LearningError {
+  constructor(details: Record<string, unknown>) {
+    super('还有未完成的一节微课堂，请选择继续它或构建新的一节', 409, 'open-session', details);
+  }
 }
 
 /** 联结练习的预估时长（秒） */
@@ -96,8 +114,9 @@ export function createLearning({ db, model, settings: currentSettings, illustrat
 
   // ---------- 学习主题 ----------
 
-  function startTopic(title: string, now: Date) {
-    const topicId = createTopic(db, title, now);
+  function startTopic(title: string, now: Date, courseId?: string | null) {
+    if (courseId) requireCourse(courseId);
+    const topicId = createTopic(db, title, now, undefined, undefined, courseId ?? null);
     enqueue(db, 'generate_graph', { topicId }, now);
     return { topicId };
   }
@@ -107,20 +126,17 @@ export function createLearning({ db, model, settings: currentSettings, illustrat
   }
 
   /**
-   * 学科标签汇总：每个标签下的主题数、有多少已能新学、有多少今天到期，
-   * 以及它属于哪个分组、这个分组用的内容风格。空标签不出现。
+   * 学科标签汇总（兼容旧接口）：每个标签下的主题数、有多少已能新学、有多少今天到期。
+   * 内容风格现在由主题所属学科的预设决定，这里按该主题实际生效的预设给出。
    */
   function listSubjects() {
     const rows = loadPoints(db);
     const states = loadStates(db);
-    const settings = currentSettings();
-    const groupStyle = { groups: settings.subjectGroups, tagStyles: settings.tagStyles, legacyStyles: settings.subjectStyles };
     const now = new Date();
     const bySubject = new Map<string, {
       subject: string;
       styleId: SubjectStyleId;
       group: string | null;
-      /** 是否用了标签自己的覆盖，而不是跟随分组 */
       ownStyle: boolean;
       topicIds: Set<string>;
       edge: number;
@@ -129,11 +145,13 @@ export function createLearning({ db, model, settings: currentSettings, illustrat
     for (const topic of db.select().from(topics).where(isNotNull(topics.subject)).all()) {
       const subject = topic.subject!.trim();
       if (!subject) continue;
+      const point = rows.find((p) => p.topicId === topic.id);
+      const presetId: SubjectStyleId = point && isSubjectStyleId(point.presetId) ? point.presetId : 'default';
       const entry = bySubject.get(subject) ?? {
         subject,
-        styleId: styleIdOfTag(groupStyle, subject),
-        group: groupOfTag(settings.subjectGroups, subject)?.name ?? null,
-        ownStyle: hasOwnStyle(groupStyle, subject),
+        styleId: presetId,
+        group: null,
+        ownStyle: false,
         topicIds: new Set<string>(),
         edge: 0,
         due: 0,
@@ -155,35 +173,97 @@ export function createLearning({ db, model, settings: currentSettings, illustrat
       .sort((a, b) => a.subject.localeCompare(b.subject, 'zh-CN'));
   }
 
-  /** 暂停或恢复主题、调整优先级、改学科标签。暂停的主题不再新学，复习照常进行。 */
-  function updateTopic(topicId: string, patch: { status?: 'active' | 'paused'; priority?: number; subject?: string | null }, now: Date) {
+  /**
+   * 暂停或恢复主题、调整优先级、改学科标签、改所属课程。
+   * 暂停的主题不再新学，复习照常进行。
+   *
+   * 换课程会换内容风格：只有目标课程的预设与当前不同、且这个主题还有待学内容时，
+   * 才需要先确认影响范围（confirmed）。这样直接 PATCH 不会在用户不知情时作废内容。
+   */
+  function updateTopic(
+    topicId: string,
+    patch: { status?: 'active' | 'paused'; priority?: number; subject?: string | null; courseId?: string | null; confirmed?: boolean },
+    now: Date,
+  ) {
     const topic = getTopic(db, topicId);
     if (!topic) throw new LearningError('学习主题不存在', 404);
+    if (patch.courseId) requireCourse(patch.courseId);
     // 清空标签和从未设过标签是同一件事，统一存 null，避免出现空字符串这个独立标签
-    const next = 'subject' in patch ? { ...patch, subject: patch.subject?.trim() || null } : patch;
-    db.update(topics).set(next).where(eq(topics.id, topicId)).run();
-    // 恢复的主题需要备新学内容
-    if (patch.status === 'active' && topic.status === 'paused') enqueue(db, 'fill_pool', { now: now.toISOString() }, now, { dedupe: true });
-    return getTopic(db, topicId)!;
+    const { confirmed, ...fields } = patch;
+    const next: Partial<typeof topics.$inferInsert> = { ...fields };
+    if ('subject' in fields) next.subject = fields.subject?.trim() || null;
+    const courseChanged = 'courseId' in fields && (fields.courseId ?? null) !== (topic.courseId ?? null);
+    if (courseChanged) next.courseId = fields.courseId ?? null;
+
+    // 归属变了但预设相同（或还没有待学内容）时不用确认，也不必重新备课
+    const presetOf = (courseId: string | null | undefined) =>
+      courseId
+        ? db.select({ presetId: disciplines.presetId }).from(courses)
+            .innerJoin(disciplines, eq(courses.disciplineId, disciplines.id))
+            .where(eq(courses.id, courseId)).get()?.presetId
+        : null;
+    const teachingChangedByMove = courseChanged && presetOf(fields.courseId) !== presetOf(topic.courseId);
+    if (teachingChangedByMove && !confirmed) {
+      const pooled = db
+        .select({ id: items.id })
+        .from(items)
+        .innerJoin(knowledgePoints, eq(items.knowledgePointId, knowledgePoints.id))
+        .where(and(eq(knowledgePoints.topicId, topicId), eq(items.status, 'pooled'), inArray(items.kind, ['lesson', 'review'])))
+        .all();
+      if (pooled.length > 0) {
+        throw new LearningError('换到这门课程会作废这个主题的待学内容，请先确认影响范围', 409, 'teaching-impact', {
+          affectedCourses: next.courseId ? 1 : 0,
+          affectedTopics: 1,
+          affectedItems: pooled.length,
+          modelCalls: true,
+          estimatedModelCalls: pooled.length,
+        });
+      }
+    }
+
+    return db.transaction((tx) => {
+      const settings = currentSettings();
+      const before = courseChanged ? teachingFingerprints(tx, settings) : null;
+      tx.update(topics).set(next).where(eq(topics.id, topicId)).run();
+      if (before) {
+        // 归属变了可能换了内容风格：只作废真正受影响主题里尚未使用的内容
+        const changed = invalidateChangedTopics(tx, before, teachingFingerprints(tx, currentSettings()));
+        if (changed.length > 0) enqueue(tx, 'fill_pool', { now: now.toISOString() }, now, { dedupe: true });
+      }
+      // 恢复的主题需要备新学内容
+      if (patch.status === 'active' && topic.status === 'paused') {
+        enqueue(tx, 'fill_pool', { now: now.toISOString() }, now, { dedupe: true });
+      }
+      return tx.select().from(topics).where(eq(topics.id, topicId)).get()!;
+    });
   }
 
   // ---------- 开始一节 ----------
 
   /**
-   * 开始下一节：有未结束的就继续它；否则从候选池按组装规则挑选。
-   * 没有补充说明时只读候选池、不调用 AI，即时返回。
-   * 有补充说明时，先按组装规则挑好这一节的内容，再按补充说明逐项重新生成（形式不变）；
-   * 某项生成失败就沿用候选池里的原内容，不让这一节因此开不了。
-   * 每个新知识点讲完后接一道联结练习（有可联结的对象时）。
+   * 开始下一节。未完成课堂的处理规则：
+   * - 明确 resume=true：继续未完成的那一节，不论范围（不改动任何数据）；
+   * - 请求带了范围且与未完成的一节不同：返回 409 与两边快照，不做任何破坏性操作；
+   * - 请求带了范围、与未完成的一节相同：也返回 409，让用户明确选择继续还是新建——
+   *   只有明确 fresh=true 才新建，且旧的未完成课堂在新的一节真正建好后才会结束。
    *
-   * fresh（构建新一节）：不管有没有未完成的一节、候选池备没备好，都现在构建一节——
-   * 未完成的那一节提前结束（没做的项不计入，之后重新安排）；候选池里没有可学的内容时当场生成。
+   * 没有未完成的一节时，从候选池按组装规则挑好内容即时返回（不调用 AI）。
+   * 带补充说明时先挑好本节内容，再按补充说明逐项重新生成（形式不变）；失败时沿用原内容。
+   * fresh 为构建新一节：候选池没有可学内容时当场生成；新的一节生成失败时旧课堂仍可恢复。
    */
   async function nextSession(now: Date, options: NextSessionOptions = {}) {
     const empty = { session: null, preparing: false, resumed: false, guided: null, capped: false };
+    const scope = normalizeScope(options.scope);
     const open = findOpenSession();
-    if (open && !options.fresh) return { ...empty, session: viewSession(open.id), resumed: true };
-    if (open) finishSession(open.id, now);
+    if (open && options.resume) return { ...empty, session: viewSession(open.id), resumed: true };
+    // 明确带了范围的请求（界面总是带）必须自己选：继续旧的，或确认新建。
+    // 直接调用本服务时可能只有 scope 而没有 scopeProvided，同样按"明确带了范围"处理，
+    // 否则会静默继续范围不同的旧课堂。两者都没有的旧调用方沿用原来的"继续未完成的一节"。
+    const strict = options.scopeProvided === true || options.scope !== undefined;
+    if (open && !options.fresh && !strict) return { ...empty, session: viewSession(open.id), resumed: true };
+    if (open && !options.fresh) {
+      throw new SessionConflictError({ openSession: openSessionSummary(open), requestedScope: { ...scope, label: scopeDescription(scope).label } });
+    }
 
     const settings = currentSettings();
     if (settings.dailySessionCap !== null && finishedToday(now, options.timeZone) >= settings.dailySessionCap) {
@@ -192,40 +272,64 @@ export function createLearning({ db, model, settings: currentSettings, illustrat
 
     const mobile = options.device === 'mobile';
     const subject = options.subject ?? null;
+    const assembled = await buildSession(now, { mobile, settings, scope, subject, fresh: options.fresh, guidance: options.guidance });
+    if (!assembled) {
+      // 新的一节没建成：旧的未完成课堂保持原样，仍可恢复
+      return { ...empty, preparing: hasPendingWork() };
+    }
+    // 新的一节已经建好，此时才结束旧的未完成课堂
+    if (open) finishSession(open.id, now);
+    return { ...empty, session: viewSession(assembled.sessionId), guided: assembled.guided };
+  }
+
+  /**
+   * 按范围从候选池组装一节并写入；没有可学内容时返回 null（不结束任何已有的课堂）。
+   * 从挑内容到写入之间不再调用模型，除非用户明确要求 fresh 或带补充说明。
+   */
+  async function buildSession(
+    now: Date,
+    options: {
+      mobile: boolean;
+      settings: Settings;
+      scope: LearningScope;
+      subject: string | null;
+      fresh?: boolean;
+      guidance?: string;
+    },
+  ): Promise<{ sessionId: string; guided: { applied: number; total: number } | null } | null> {
+    const { mobile, settings, scope, subject } = options;
     let points = loadPoints(db);
     let states = loadStates(db);
-    let picked = pickFromPool(now, points, states, mobile, settings, subject).items;
+    let picked = pickFromPool(now, points, states, mobile, settings, scope, subject).items;
     if (picked.length === 0 && options.fresh) {
       await fillPool({ db, model, settings: currentSettings, clock: () => now, illustrations: illustrationsOn() }, now);
-      picked = pickFromPool(now, loadPoints(db), loadStates(db), mobile, settings, subject).items;
+      picked = pickFromPool(now, loadPoints(db), loadStates(db), mobile, settings, scope, subject).items;
     }
-    if (picked.length === 0) return { ...empty, preparing: hasPendingWork() };
+    if (picked.length === 0) return null;
 
     let guided: { applied: number; total: number } | null = null;
     if (options.guidance) {
       const result = await regenerate(picked, options.guidance, now);
       picked = result.items;
       guided = { applied: result.applied, total: picked.length };
-      // 生成要等一会儿；这期间如果已经开了别的一节（例如重复点击），以那一节为准
-      const opened = findOpenSession();
-      if (opened) return { ...empty, session: viewSession(opened.id), resumed: true };
     }
 
-    // 生成期间可能在地图里改了学习选择，按此刻的状态创建课堂
+    // 生成期间可能在地图里改了学习选择或改了范围，按此刻的状态创建课堂
     points = loadPoints(db);
     states = loadStates(db);
     const stageOf = (id: string) => (states.get(id) ?? UNLEARNED).stage;
     const edgeIds = new Set(cognitiveEdge(points, states).map((p) => p.id));
     const excludedIds = new Set(points.filter((p) => p.excluded).map((p) => p.id));
+    const inScope = (p: PointInfo) => (subject !== null ? p.subject === subject : scopeIncludes(scope, p));
     const includedIds = new Set(points.filter((p) => {
       if (p.excluded) return false;
-      if (subject !== null && p.subject !== subject) return false;
+      if (!inScope(p)) return false;
       if (stageOf(p.id) === 'unlearned') return edgeIds.has(p.id);
       if (stageOf(p.id) === 'understand') return prerequisitesSatisfied(p, stageOf, excludedIds);
       return true;
     }).map((p) => p.id));
     picked = picked.filter((item) => includedIds.has(item.knowledgePointId));
-    if (picked.length === 0) return { ...empty, preparing: hasPendingWork() };
+    if (picked.length === 0) return null;
     const byId = new Map(points.map((p) => [p.id, p]));
     const entries = withConnections(
       picked.map((item) => ({ itemId: item.id, purpose: purposeOf(item, states.get(item.knowledgePointId) ?? UNLEARNED) })),
@@ -236,44 +340,74 @@ export function createLearning({ db, model, settings: currentSettings, illustrat
     );
     const firstNew = entries.find((e) => e.purpose === 'new');
     const newTopicId = firstNew ? (byId.get(picked.find((i) => i.id === firstNew.itemId)!.knowledgePointId)?.topicId ?? null) : null;
+    const snapshot = scopeSnapshot(scope);
 
     const sessionId = randomUUID();
     db.transaction((tx) => {
       tx.insert(sessions)
-        .values({ id: sessionId, startedAt: now, budgetSeconds: settings.budgetSeconds, newTopicId, device: mobile ? 'mobile' : 'desktop', guidance: options.guidance ?? null })
+        .values({
+          id: sessionId,
+          startedAt: now,
+          budgetSeconds: settings.budgetSeconds,
+          newTopicId,
+          device: mobile ? 'mobile' : 'desktop',
+          guidance: options.guidance ?? null,
+          scopeKind: snapshot.kind,
+          scopeId: snapshot.id,
+          scopeLabel: snapshot.label,
+        })
         .run();
       entries.forEach((entry, position) => tx.insert(sessionItems).values({ sessionId, itemId: entry.itemId, position, purpose: entry.purpose }).run());
       markItemsUsed(tx, picked.map((i) => i.id));
     });
-    return { ...empty, session: viewSession(sessionId), guided };
+    return { sessionId, guided };
   }
 
   /**
    * 预览下一节：不开始、不改动任何数据，只说明此刻打开会学什么、大约多久。
    * 首页据此回答"下一节准备好了吗"。
+   *
+   * 未完成的一节独立显示，带它开始时的范围快照（标签仍用那时的名字）；
+   * items / dueCount 等字段始终反映当前请求的范围，两者互不替代。
    */
-  function previewNext(now: Date, options: Pick<NextSessionOptions, 'device' | 'timeZone' | 'subject'> = {}) {
+  function previewNext(
+    now: Date,
+    options: Pick<NextSessionOptions, 'device' | 'timeZone' | 'subject'> & { scope?: LearningScope } = {},
+  ) {
     const settings = currentSettings();
     const open = findOpenSession();
     const sessionsToday = finishedToday(now, options.timeZone);
     const capped = !open && settings.dailySessionCap !== null && sessionsToday >= settings.dailySessionCap;
     const points = loadPoints(db);
     const states = loadStates(db);
+    const scope = normalizeScope(options.scope);
     const subject = options.subject ?? null;
-    const { items: picked, newPaused, timeFactor: factor } = pickFromPool(now, points, states, options.device === 'mobile', settings, subject);
+    const { items: picked, newPaused, timeFactor: factor } = pickFromPool(now, points, states, options.device === 'mobile', settings, scope, subject);
     const byId = new Map(points.map((p) => [p.id, p]));
     const purposes = picked.map((item) => purposeOf(item, states.get(item.knowledgePointId) ?? UNLEARNED));
     const count = (purpose: ItemPurpose) => purposes.filter((p) => p === purpose).length;
-    const dueCount = points.filter((p) => {
-      const card = states.get(p.id)?.card;
-      return !p.excluded && card != null && hasSchedule((states.get(p.id) ?? UNLEARNED).stage) && card.due.getTime() <= now.getTime();
-    }).length;
+    const isDue = (p: PointInfo) => {
+      const state = states.get(p.id) ?? UNLEARNED;
+      const card = state.card;
+      return !p.excluded && card != null && hasSchedule(state.stage) && card.due.getTime() <= now.getTime();
+    };
+    const inScope = (p: PointInfo) => (subject !== null ? p.subject === subject : scopeIncludes(scope, p));
+    // 范围内到期的复习；scope 外的到期复习单独计数，提醒用户还有别处的内容在等
+    const dueCount = points.filter((p) => inScope(p) && isDue(p)).length;
+    const outsideDueCount = scope.kind === 'all' && subject === null ? 0 : points.filter((p) => !inScope(p) && isDue(p)).length;
     const openView = open ? viewSession(open.id) : null;
     return {
-      open: openView
+      scope: scopeDescription(scope),
+      open: open && openView
         ? {
             id: openView.id,
             startedAt: openView.startedAt,
+            // 开始时的范围快照：之后改名不影响已经开始的这一节
+            scope: {
+              kind: open.scopeKind,
+              id: open.scopeId,
+              label: open.scopeLabel ?? scopeDescription({ kind: open.scopeKind, id: open.scopeId ?? undefined }).label,
+            },
             items: openView.items.map((item) => ({
               title: item.title,
               topicTitle: item.topicTitle,
@@ -290,6 +424,7 @@ export function createLearning({ db, model, settings: currentSettings, illustrat
       preparing: picked.length === 0 && hasPendingWork(),
       newPaused,
       dueCount,
+      outsideDueCount,
       counts: { review: count('review'), contrast: count('contrast'), spotCheck: count('spot_check'), advance: count('advance'), new: count('new') },
       estMinutes: Math.max(1, Math.round(picked.reduce((sum, item) => sum + item.estSeconds * factor, 0) / 60)),
       budgetMinutes: Math.round(settings.budgetSeconds / 60),
@@ -355,6 +490,7 @@ export function createLearning({ db, model, settings: currentSettings, illustrat
       { topicTitle: point?.topicTitle ?? '', title: point?.title ?? '', summary: point?.summary ?? '', partner: content.partner.title },
       content.prompt,
       input.answer.text,
+      teachingContextLabel(point?.presetId),
     );
     requireSessionItem(input.sessionId, item.id);
     const attemptId = randomUUID();
@@ -434,7 +570,7 @@ export function createLearning({ db, model, settings: currentSettings, illustrat
       answer: 'text' in answer ? answer.text : `选择了第 ${answer.choice + 1} 项`,
       originalFeedback: attempt.feedback ?? '',
       reason,
-    });
+    }, teachingContextLabel(point?.presetId));
     const appeal: Appeal = { reason, outcome: verdict.outcome, feedback: verdict.feedback, at: now.toISOString() };
     const before = stateFromJson(attempt.stateBefore);
 
@@ -501,6 +637,57 @@ export function createLearning({ db, model, settings: currentSettings, illustrat
     return db.select().from(sessions).where(isNull(sessions.finishedAt)).orderBy(asc(sessions.startedAt)).get();
   }
 
+  /** 未完成课堂的快照：用于 409 响应，让前端明确选择继续还是新建 */
+  function openSessionSummary(session: typeof sessions.$inferSelect) {
+    const view = viewSession(session.id);
+    const scope: LearningScope = session.scopeKind === 'all'
+      ? { kind: 'all' }
+      : { kind: session.scopeKind, id: session.scopeId ?? undefined };
+    return {
+      id: session.id,
+      startedAt: session.startedAt,
+      scope: { ...scope, label: session.scopeLabel ?? scopeDescription(scope).label },
+      items: view.items.map((item) => ({
+        title: item.title,
+        topicTitle: item.topicTitle,
+        purpose: item.purpose,
+        formLabel: item.formLabel,
+        excluded: item.excluded,
+        done: item.excluded || (item.attempt !== null && !item.attempt.needsRating),
+      })),
+    };
+  }
+
+  /** 范围的名字快照：开始一节时写入，之后改名不影响已经开始的这一节 */
+  function scopeSnapshot(scope: LearningScope): { kind: LearningScope['kind']; id: string | null; label: string | null } {
+    const description = scopeDescription(scope);
+    return { kind: scope.kind, id: scope.kind === 'all' ? null : (scope.id ?? null), label: description.label };
+  }
+
+  /** 范围的可读描述：界面与快照共用 */
+  function scopeDescription(scope: LearningScope): { kind: LearningScope['kind']; id: string | null; label: string } {
+    if (scope.kind === 'discipline' && scope.id) {
+      const row = db.select({ name: disciplines.name }).from(disciplines).where(eq(disciplines.id, scope.id)).get();
+      return { kind: scope.kind, id: scope.id, label: row?.name ?? '已删除的学科' };
+    }
+    if (scope.kind === 'course' && scope.id) {
+      const row = db.select({ name: courses.name, disciplineName: disciplines.name })
+        .from(courses)
+        .leftJoin(disciplines, eq(courses.disciplineId, disciplines.id))
+        .where(eq(courses.id, scope.id))
+        .get();
+      return { kind: scope.kind, id: scope.id, label: row?.name ?? '已删除的课程' };
+    }
+    return { kind: 'all', id: null, label: '不限范围' };
+  }
+
+  /** 引用某门课程的主题必须指向存在的课程 */
+  function requireCourse(courseId: string): void {
+    if (!db.select({ id: courses.id }).from(courses).where(eq(courses.id, courseId)).get()) {
+      throw new LearningError('课程不存在', 404);
+    }
+  }
+
   /** 今天（用户时区）已经完成了几节 */
   function finishedToday(now: Date, timeZone = SERVER_TIME_ZONE): number {
     const dayOf = dayFormatter(timeZone);
@@ -514,7 +701,15 @@ export function createLearning({ db, model, settings: currentSettings, illustrat
   }
 
   /** 按组装规则从候选池挑出一节（不写入数据库） */
-  function pickFromPool(now: Date, points: PointInfo[], states: Map<string, MemoryState>, mobile: boolean, settings: Settings, subject: string | null = null) {
+  function pickFromPool(
+    now: Date,
+    points: PointInfo[],
+    states: Map<string, MemoryState>,
+    mobile: boolean,
+    settings: Settings,
+    scope: LearningScope = ALL_SCOPE,
+    subject: string | null = null,
+  ) {
     const pool = loadPool(db);
     const factor = currentTimeFactor();
     const result = assemble({
@@ -524,7 +719,9 @@ export function createLearning({ db, model, settings: currentSettings, illustrat
       now,
       budgetSeconds: settings.budgetSeconds,
       maxNewPerSession: settings.maxNewPerSession,
-      newTopicId: chooseTopicForNew(points, states, pool, mobile, subject),
+      newTopicId: chooseTopicForNew(points, states, pool, mobile, scope, subject),
+      scope,
+      // 旧接口按标签限定范围时仍按标签过滤；新接口按 scope
       subject,
       mobile,
       timeFactor: factor,
@@ -533,11 +730,19 @@ export function createLearning({ db, model, settings: currentSettings, illustrat
   }
 
   /** 这一节的新知识点来自哪个主题：在候选池里备有新学内容的主题之间，按优先级轮换 */
-  function chooseTopicForNew(points: PointInfo[], states: Map<string, MemoryState>, pool: PoolItem[], mobile: boolean, subject: string | null = null): string | null {
+  function chooseTopicForNew(
+    points: PointInfo[],
+    states: Map<string, MemoryState>,
+    pool: PoolItem[],
+    mobile: boolean,
+    scope: LearningScope = ALL_SCOPE,
+    subject: string | null = null,
+  ): string | null {
     const ready = new Set(
       pool.filter((i) => i.kind === 'lesson' && (!mobile || isMobileForm(i.questionForm))).map((i) => i.knowledgePointId),
     );
-    const edge = cognitiveEdge(points, states).filter((p) => subject === null || p.subject === subject);
+    const inScope = (p: GraphPoint) => (subject !== null ? p.subject === subject : scopeIncludes(scope, p));
+    const edge = cognitiveEdge(points, states).filter(inScope);
     const topicIds = new Set(edge.filter((p) => ready.has(p.id)).map((p) => p.topicId!));
     if (topicIds.size === 0) return null;
     const served = db.select({ newTopicId: sessions.newTopicId }).from(sessions).where(isNotNull(sessions.newTopicId)).all();
@@ -594,46 +799,24 @@ export function createLearning({ db, model, settings: currentSettings, illustrat
     return result;
   }
 
-  /** 按补充说明重新生成挑好的内容：成功的存入并替换原内容，失败的沿用原内容 */
+  /**
+   * 按补充说明重新生成挑好的内容：成功的存入并替换原内容，失败的沿用原内容。
+   * 生成与指纹核对都由 jobs/regenerate 统一完成：引导词与指纹按主题所属学科解析，
+   * 生成期间配置变了就提示重试，过期内容不写入。
+   */
   async function regenerate(picked: PoolItem[], guidance: string, now: Date) {
-    const generationSettings = currentSettings();
-    const points = loadPoints(db);
-    const states = loadStates(db);
-    const known = loadExistingKnowledge(db).map((k) => k.text);
-    const byId = new Map(points.map((p) => [p.id, p]));
-    // 每项按它所属学科取引导词：不同学科可以用不同的内容风格
-    const guidanceOf = (pointId: string) => guidanceForSubject(generationSettings, byId.get(pointId)?.topicSubject ?? null);
-    const results = await settleWithLimit(
-      picked.map((item) => () =>
-        generateItem(
-          model,
-          contextOf(byId.get(item.knowledgePointId)!, byId, { guidance, state: states.get(item.knowledgePointId), existingKnowledge: known }),
-          needOf(item),
-          { illustrations: illustrationsOn(), contentGuidance: guidanceOf(item.knowledgePointId) },
-        ),
-      ),
-      generationSettings.generationConcurrency,
+    const settings = currentSettings();
+    const result = await regenerateItems(
+      { db, model, settings: currentSettings, illustrations: illustrationsOn(), clock: () => now },
+      picked.map((item) => ({ ...item })),
+      guidance,
+      now,
     );
-    // 只要本次涉及的学科里有引导词变化就说明内容已过期；其他学科的变化不影响这一节
-    const guidanceStale = picked.some((item) =>
-      !sameContentGuidance(guidanceOf(item.knowledgePointId), guidanceForSubject(currentSettings(), byId.get(item.knowledgePointId)?.topicSubject ?? null)),
-    );
-    if (guidanceStale) {
+    if (result.stale) {
       throw new LearningError('生成期间引导词已更新，请重新开始，新内容将按最新要求准备。', 409);
     }
-    const replaced = picked.map((item, i): PoolItem => {
-      const result = results[i]!;
-      if (result.status === 'rejected') {
-        console.warn(`按补充说明生成失败，沿用原内容（${item.kind} / ${item.knowledgePointId}）：${String(result.reason)}`);
-        return item;
-      }
-      const id = db.transaction((tx) => {
-        tx.update(items).set({ status: 'void' }).where(eq(items.id, item.id)).run();
-        return saveGeneratedItem(tx, result.value, now);
-      });
-      return { ...item, id, estSeconds: result.value.estSeconds };
-    });
-    return { items: replaced, applied: results.filter((r) => r.status === 'fulfilled').length };
+    void settings;
+    return { items: result.items, applied: result.applied };
   }
 
   /**
@@ -673,7 +856,13 @@ export function createLearning({ db, model, settings: currentSettings, illustrat
     if (!('text' in answer)) throw new LearningError('这道题需要提交文字作答', 400);
     if (!isOpenQuestion(question)) throw new LearningError('不支持的题目形式', 400);
     const point = loadPoints(db).find((p) => p.id === item.knowledgePointId);
-    return gradeOpenAnswer(model, { topicTitle: point?.topicTitle ?? '', title: point?.title ?? '' }, question, answer.text);
+    return gradeOpenAnswer(
+      model,
+      { topicTitle: point?.topicTitle ?? '', title: point?.title ?? '' },
+      question,
+      answer.text,
+      teachingContextLabel(point?.presetId),
+    );
   }
 
   /** 联结不成立：对方知识点立即到期，下一节复习它 */
@@ -777,7 +966,6 @@ export function createLearning({ db, model, settings: currentSettings, illustrat
 }
 
 export type Learning = ReturnType<typeof createLearning>;
-
 /** 组装时确定这一项的用途 */
 function purposeOf(item: PoolItem, state: MemoryState): ItemPurpose {
   if (item.form === CONTRAST_FORM) return 'contrast';

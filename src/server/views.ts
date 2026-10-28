@@ -22,6 +22,10 @@ export class LearningError extends Error {
   constructor(
     message: string,
     readonly status: 400 | 404 | 409 | 415 | 502,
+    /** 机器可读的错误码；界面据此区分"需要用户确认"和普通失败 */
+    readonly code?: string,
+    /** 结构化补充信息：例如冲突时未完成的一节与请求范围的快照 */
+    readonly details?: Record<string, unknown>,
   ) {
     super(message);
   }

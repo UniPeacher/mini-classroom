@@ -1,44 +1,57 @@
-import { useCallback, useState } from 'react';
-import { type Preview, type ReviewDay, type Session, type Subject, type Today, type Topic, api } from '../api';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { type LearningScope, type Preview, type ReviewDay, type Session, type Today, api } from '../api';
 import { Icon } from '../components/Icon';
 import { SessionContents, useSessionStart } from '../components/SessionPreview';
 import { usePolling, useResource } from '../hooks';
 import { formatDay } from '../labels';
-import { openReview, routeHash } from '../router';
+import { useOrganization, scopeLabel } from '../organization';
+import type { OrganizationSnapshot } from '../organization';
+import { openReview, rememberScope, routeHash, sameScope } from '../router';
 
-/** 当天的学习安排与记录；主题探索由独立首页承载。 */
-export function TodayScreen(props: { topics: Topic[] | null; onTopicsChanged: () => void; onStart: (session: Session, notice?: string) => void }) {
-  const { topics, onTopicsChanged, onStart } = props;
-  // 选中的学科：null 表示不限定，沿用原来的跨主题安排
-  const [subject, setSubject] = useState<string | null>(null);
-  const preview = useResource(() => api.preview({ subject }), [subject]);
-  const subjects = useResource(() => api.listSubjects().then((r) => r.subjects), []);
+/**
+ * 当天的学习安排与记录。
+ * 先选范围（全部 / 学科 / 课程），这一节的预览、到期统计和开始都用同一个范围；
+ * 存在未完成的一节时单独显示续课面板和它的原范围，不静默替换。
+ */
+export function TodayScreen({ scope, onStart }: { scope: LearningScope; onStart: (session: Session, notice?: string) => void }) {
+  const organization = useOrganization();
+  // 换范围后旧预览立即失效：不能一边显示新范围名、一边列着上一个范围的内容
+  const scopeKey = `${scope.kind}:${scope.id ?? ''}`;
+  // 只要地址里带了范围，就算一次明确选择：之后从侧栏回来保持同一范围
+  useEffect(() => {
+    rememberScope(scope);
+  }, [scopeKey]);
+  const preview = useResource(() => api.preview({ scope }), [scope.kind, scope.id], { staleKey: scopeKey });
   const today = useResource(() => api.today(), []);
   const days = useResource(() => api.reviewDays().then((r) => r.days), []);
   const reloadPreview = preview.reload;
   const refreshAll = useCallback(() => {
     void reloadPreview();
-    onTopicsChanged();
-  }, [reloadPreview, onTopicsChanged]);
-  const generating = (topics ?? []).some((t) => t.graphStatus === 'pending' || t.placementStatus === 'preparing') || preview.data?.preparing === true;
+    void organization.reload();
+  }, [reloadPreview, organization.reload]);
+  const generating = preview.data?.preparing === true;
   usePolling(generating, refreshAll);
-  const hasTopics = (topics ?? []).length > 0;
+  const topics = useMemo(() => allTopics(organization.data), [organization.data]);
+  const hasTopics = topics.length > 0;
+  const scopeName = scopeLabel(organization.data, scope);
 
   return (
     <>
       <div className="title-row">
         <div>
           <h1>今天的学习</h1>
-          <p className="sub">{today.data ? `${formatDay(today.data.date)} · 已完成 ${today.data.sessionsToday} 节${today.data.dailySessionCap !== null ? ` · 每日上限 ${today.data.dailySessionCap} 节` : ''}` : '查看当天的学习安排和记录。'}</p>
+          <p className="sub">
+            {today.data ? `${formatDay(today.data.date)} · 已完成 ${today.data.sessionsToday} 节${today.data.dailySessionCap !== null ? ` · 每日上限 ${today.data.dailySessionCap} 节` : ''}` : '查看当天的学习安排和记录。'}
+          </p>
         </div>
         <a className="card-link" href={routeHash({ name: 'home' })}>去首页添加新主题<Icon name="chevron" /></a>
       </div>
-      <SubjectPicker subjects={subjects.data ?? []} value={subject} onChange={setSubject} />
+      <ScopePicker scope={scope} />
       {preview.error ? <p className="error-text" role="alert">没能读取下一节：{preview.error} <button className="card-link" type="button" onClick={preview.reload}>重新加载</button></p>
-        : <ActionArea preview={preview.data} hasTopics={hasTopics} topics={topics} subject={subject} onStart={onStart} />}
+        : <ActionArea preview={preview.data} hasTopics={hasTopics} scope={scope} scopeName={scopeName} snapshot={organization.data} onRetry={reloadPreview} onStart={onStart} />}
       <div className="grid top section-gap">
         <section className="panel span-8" aria-labelledby="next-title">
-          {preview.error ? <><header><h2 id="next-title">这一节会学什么</h2></header><p className="muted">重新加载后查看当前安排。</p></> : <NextContents preview={preview.data} />}
+          {preview.error ? <><header><h2 id="next-title">这一节会学什么</h2></header><p className="muted">重新加载后查看当前安排。</p></> : <NextContents preview={preview.data} scopeName={scopeName} />}
         </section>
         <section className="panel span-4" aria-labelledby="slots-title">
           {today.error ? <><header><h2 id="slots-title">今天的提醒</h2></header><p className="error-text" role="alert">{today.error} <button type="button" className="card-link" onClick={today.reload}>重新加载</button></p></> : <Reminders today={today.data} />}
@@ -54,29 +67,62 @@ export function TodayScreen(props: { topics: Topic[] | null; onTopicsChanged: ()
   );
 }
 
+function allTopics(snapshot: ReturnType<typeof useOrganization>['data']): { id: string; title: string; courseId: string | null }[] {
+  if (!snapshot) return [];
+  return snapshot.allTopics.map((topic) => ({ id: topic.id, title: topic.title, courseId: topic.courseId }));
+}
+
 /**
- * 学科选择：选一个学科后，这一节的复习、重讲、新学都只取该学科的知识点。
- * 不选时和原来一样跨主题安排；没有打标签的主题不出现，用"全部"兜住。
+ * 学习范围：全部（含未归类）、某个学科、某门课程。
+ * 范围写进页面地址，刷新或返回时不用重新选择；预览和开始课堂共用这一份。
  */
-function SubjectPicker(props: { subjects: Subject[]; value: string | null; onChange: (subject: string | null) => void }) {
-  const { subjects, value, onChange } = props;
-  if (subjects.length === 0) return null;
+function ScopePicker({ scope }: { scope: LearningScope }) {
+  const organization = useOrganization();
+  const snapshot = organization.data;
+  const link = (next: LearningScope) => routeHash({ name: 'today', scope: next });
+  const isCurrent = (next: LearningScope) => sameScope(scope, next);
+  if (organization.error) return <p className="error-text small" role="alert">没能读取学科与课程：{organization.error}</p>;
+  if (!snapshot) return null;
+  const hasStructure = snapshot.disciplines.length > 0 && snapshot.allCoursesCount > 0;
   return (
-    <div className="subject-picker" style={{ marginBottom: 16 }}>
-      <div className="segmented" role="group" aria-label="按学科学习">
-        <button type="button" aria-pressed={value === null} onClick={() => onChange(null)}>
-          全部学科
-        </button>
-        {subjects.map((s) => (
-          <button key={s.subject} type="button" aria-pressed={value === s.subject} onClick={() => onChange(s.subject)}>
-            {s.subject}
-            {s.edge + s.due > 0 && <span className="muted num" style={{ marginLeft: 4 }}>{s.edge + s.due}</span>}
-          </button>
-        ))}
-      </div>
-      {value !== null && (
-        <p className="muted small" style={{ marginTop: 8 }}>
-          这一节只在「{value}」内安排：复习和新学都来自这个学科。到期但不在这个学科的内容，等切回全部学科或加入别的学科后再复习。
+    <div className="scope-picker" style={{ marginBottom: 16 }}>
+      {hasStructure ? (
+        <div className="scope-row">
+          <label className="scope-field">
+            <span className="label">学习范围</span>
+            <select
+              className="select"
+              value={scope.kind === 'all' ? '' : `${scope.kind}:${scope.id}`}
+              aria-label="学习范围"
+              onChange={(event) => {
+                const value = event.target.value;
+                const next: LearningScope = value ? { kind: value.split(':')[0] as 'course' | 'discipline', id: value.split(':').slice(1).join(':') } : { kind: 'all' };
+                // 记下这次明确选择，侧栏等入口回来时保持同一范围
+                rememberScope(next);
+                window.location.hash = routeHash({ name: 'today', scope: next });
+              }}
+            >
+              <option value="">全部范围（含未归类）</option>
+              {snapshot.disciplines.map((node) => (
+                <optgroup key={node.discipline.id} label={node.discipline.name}>
+                  <option value={`discipline:${node.discipline.id}`}>{node.discipline.name} · 全部课程</option>
+                  {node.courses.map((courseNode) => (
+                    <option key={courseNode.course.id} value={`course:${courseNode.course.id}`}>
+                      {node.discipline.name} / {courseNode.course.name}
+                    </option>
+                  ))}
+                </optgroup>
+              ))}
+            </select>
+          </label>
+          <a className="card-link small" href={routeHash({ name: 'organization' })}>管理学科与课程<Icon name="chevron" /></a>
+        </div>
+      ) : (
+        <p className="muted small">还没有学科与课程结构，这一节按全部主题安排。<a className="card-link" href={link({ kind: 'all' })}> 全部范围</a></p>
+      )}
+      {scope.kind !== 'all' && (
+        <p className="muted small scope-note">
+          这一节只在「{scopeLabel(snapshot, scope)}」内安排：复习和新学都来自这个范围。范围外到期的复习会单独提示数量，不混入这一节，也不改变到期时间。
         </p>
       )}
     </div>
@@ -91,22 +137,25 @@ const GUIDANCE_PRESETS = [
 ];
 
 /**
- * 当天的学习操作：保留开始、继续与手动构建新一节。
- * 有未完成的一节 → 继续；内容已备好 → 开始；没备好 → 现在构建。"构建新一节"是次要操作，
- * 点开后在原地展开说明框，主按钮换成"构建"，避免两个主按钮抢注意力。
+ * 当天的学习操作顺序：
+ * 1. 有未完成的一节 → 续课面板（显式继续，显示原范围）；要结束它并开新一节需明确确认。
+ * 2. 否则按当前范围开始或构建。
  */
-function ActionArea(props: {
+export function ActionArea(props: {
   preview: Preview | null;
   hasTopics: boolean;
-  topics: Topic[] | null;
-  subject: string | null;
+  scope: LearningScope;
+  scopeName: string;
+  snapshot: OrganizationSnapshot | null;
+  onRetry: () => Promise<void>;
   onStart: (session: Session, notice?: string) => void;
 }) {
-  const { preview, hasTopics, topics, subject, onStart } = props;
+  const { preview, hasTopics, scope, scopeName, snapshot, onRetry, onStart } = props;
   const [composing, setComposing] = useState(false);
-  const { busy, error, run } = useSessionStart(onStart);
+  const [confirmNew, setConfirmNew] = useState(false);
+  const start = useSessionStart(onStart);
 
-  if (topics && !hasTopics) {
+  if (!hasTopics) {
     return (
       <div className="action-area">
         <p className="muted">还没有学习主题。先到首页添加一个想学的主题，再完成摸底。</p>
@@ -116,60 +165,118 @@ function ActionArea(props: {
   }
   if (!preview) return <div className="action-area"><span className="skeleton" style={{ display: 'inline-block', width: 160, height: 38 }} /></div>;
 
-  if (composing) {
-    return <Composer open={preview.open} busy={busy === 'build'} error={error} onBuild={(guidance) => run('build', guidance, subject)} onCancel={() => setComposing(false)} />;
+  const open = preview.open;
+  if (open) {
+    const remaining = open.items.filter((i) => !i.done && !i.excluded).length;
+    const originalScope = scopeLabel(snapshot, open.scope ?? null);
+    return (
+      <div className="action-area">
+        <section className="panel white resume-panel" aria-labelledby="resume-title">
+          <header>
+            <h2 id="resume-title">继续上次课堂</h2>
+            <span className="meta">原范围：{originalScope}</span>
+          </header>
+          <p className="muted small" style={{ marginBottom: 12 }}>
+            {remaining > 0
+              ? `这一节还剩 ${remaining} 项没做。当前选择的范围只作用于新课堂，不会替换它。`
+              : '这一节已作答完成，可以查看结果或结束它。'}
+          </p>
+          <SessionContents preview={preview} source="open" />
+          <div className="actions-row">
+            <button type="button" className="btn primary large" onClick={() => void start.run('resume')} disabled={start.busy !== null}>
+              {start.busy === 'resume' ? '正在打开…' : remaining > 0 ? '继续这一节' : '查看本节结果'}
+            </button>
+            <a className="btn large" href={routeHash({ name: 'learn' })}>打开学习页</a>
+          </div>
+          {start.error && <p className="error-text" role="alert">{start.error}</p>}
+        </section>
+        <section className="panel" aria-labelledby="new-session-title" style={{ marginTop: 16 }}>
+          <header><h2 id="new-session-title">按当前范围开新一节</h2><span className="meta">{scopeName}</span></header>
+          <p className="muted small">
+            结束上面这一节（没做的项之后重新安排），再按「{scopeName}」构建新的一节。
+            新内容准备好之前，旧的一节仍然保留；准备失败不会提前结束它。
+          </p>
+          {!confirmNew ? (
+            <div className="actions-row">
+              <button type="button" className="btn" onClick={() => setConfirmNew(true)} disabled={start.busy !== null}>按新范围开始…</button>
+            </div>
+          ) : (
+            <div className="confirm-inline">
+              <p className="notice">确定结束上一节并开始新的吗？</p>
+              <div className="actions-row" style={{ marginTop: 0 }}>
+                <button type="button" className="btn primary" onClick={() => void start.run('build', { scope })} disabled={start.busy !== null}>
+                  {start.busy === 'build' ? '正在构建，大约半分钟…' : '结束上一节并开始'}
+                </button>
+                <button type="button" className="btn ghost" onClick={() => setConfirmNew(false)} disabled={start.busy !== null}>取消</button>
+              </div>
+              {start.error && <p className="error-text" role="alert">{start.error}</p>}
+            </div>
+          )}
+        </section>
+      </div>
+    );
   }
 
-  const remaining = preview.open ? preview.open.items.filter((i) => !i.done).length : 0;
-  const ready = preview.items.length > 0;
+  if (composing) {
+    return <Composer busy={start.busy === 'build'} error={start.error} scopeName={scopeName} onBuild={(guidance) => void start.run('build', { guidance, scope })} onCancel={() => setComposing(false)} />;
+  }
 
+  const ready = preview.items.length > 0;
   return (
     <div className="action-area">
-      {preview.capped && !preview.open ? (
+      {preview.capped ? (
         <p className="muted">
-          今天已学满 {preview.dailySessionCap} 节。想多学可以在<a className="card-link" href={routeHash({ name: 'settings' })}>设置</a>里调高每日上限。
+          今天已学满 {preview.dailySessionCap} 节。想多学可以在<a className="card-link" href={routeHash({ name: 'personalization', tab: 'learning' })}>个性化 · 学习节奏</a>里调高每日上限。
         </p>
       ) : (
         <div className="actions-row" style={{ marginTop: 0 }}>
-          {preview.open ? (
-            <button type="button" className="btn primary large" onClick={() => run('start', undefined, subject)} disabled={busy !== null}>
-              {busy === 'start' ? '正在打开…' : `继续这一节 · 还剩 ${remaining} 项`}
-            </button>
-          ) : ready ? (
-            <button type="button" className="btn primary large" onClick={() => run('start', undefined, subject)} disabled={busy !== null}>
-              {busy === 'start' ? '正在打开…' : `开始这一节 · 约 ${preview.estMinutes} 分钟`}
+          {ready ? (
+            <button type="button" className="btn primary large" onClick={() => void start.run('start', { scope })} disabled={start.busy !== null}>
+              {start.busy === 'start' ? '正在打开…' : `开始这一节 · 约 ${preview.estMinutes} 分钟`}
             </button>
           ) : (
-            <button type="button" className="btn primary large" onClick={() => run('build', undefined, subject)} disabled={busy !== null}>
-              {busy === 'build' ? '正在构建，大约半分钟…' : '现在构建一节'}
+            <button type="button" className="btn primary large" onClick={() => void start.run('build', { scope })} disabled={start.busy !== null}>
+              {start.busy === 'build' ? '正在构建，大约半分钟…' : '现在构建一节'}
             </button>
           )}
-          <button type="button" className="btn large" onClick={() => setComposing(true)} disabled={busy !== null}>
+          <button type="button" className="btn large" onClick={() => setComposing(true)} disabled={start.busy !== null}>
             构建新一节…
           </button>
         </div>
       )}
-      {(!preview.capped || preview.open) && <p className="muted small" style={{ marginTop: 10 }}>
-        {preview.open
-          ? '"构建新一节"会提前结束上一节，没做的项之后重新安排。'
-          : ready
+      {!preview.capped && (
+        <p className="muted small" style={{ marginTop: 10 }}>
+          {ready
             ? '想换个讲法或侧重点？用"构建新一节"写一句说明，按你的说明重新生成。'
             : '构建会当场生成这一节的内容，大约需要半分钟到一分钟。'}
-      </p>}
-      {error && <p className="error-text" style={{ marginTop: 8 }}>{error}</p>}
+        </p>
+      )}
+      {preview.outsideDueCount !== undefined && preview.outsideDueCount > 0 && (
+        <p className="muted small" style={{ marginTop: 8 }}>
+          范围外还有 {preview.outsideDueCount} 个到期复习，切回全部范围后才会安排。
+        </p>
+      )}
+      {start.error && <p className="error-text" style={{ marginTop: 8 }}>{start.error}</p>}
+      {start.openConflict && (
+        <p className="notice" style={{ marginTop: 12 }}>
+          已有一节没完成。请在上面选择"继续这一节"，或明确结束它再开新的一节。
+          <button type="button" className="card-link" style={{ marginLeft: 8 }} onClick={() => { start.clearConflict(); void onRetry(); }}>刷新安排</button>
+        </p>
+      )}
     </div>
   );
 }
 
 /** 构建新一节：写一句说明引导内容（可选），常用说明一键填入后还能改 */
-function Composer(props: { open: Preview['open']; busy: boolean; error: string; onBuild: (guidance?: string) => void; onCancel: () => void }) {
-  const { open, busy, error, onBuild, onCancel } = props;
+export function Composer(props: { busy: boolean; error: string; scopeName: string; onBuild: (guidance?: string) => void; onCancel: () => void }) {
+  const { busy, error, scopeName, onBuild, onCancel } = props;
   const [text, setText] = useState('');
   const guidance = text.trim();
   return (
     <section className="panel white action-area composer" aria-labelledby="composer-title">
       <header>
         <h2 id="composer-title">构建新一节</h2>
+        <span className="meta">{scopeName}</span>
         <button type="button" className="btn small ghost" onClick={onCancel} disabled={busy}>
           取消
         </button>
@@ -196,7 +303,6 @@ function Composer(props: { open: Preview['open']; busy: boolean; error: string; 
           onChange={(e) => setText(e.target.value)}
         />
       </div>
-      {open && <p className="notice" style={{ marginTop: 12 }}>上一节还有 {open.items.filter((i) => !i.done).length} 项没做，构建后上一节提前结束，没做的之后重新安排。</p>}
       <div className="actions-row">
         <button type="button" className="btn primary large" onClick={() => onBuild(guidance || undefined)} disabled={busy}>
           {busy ? (guidance ? '正在按说明生成，大约半分钟到一分钟…' : '正在构建…') : guidance ? '按说明构建' : '直接构建'}
@@ -208,18 +314,28 @@ function Composer(props: { open: Preview['open']; busy: boolean; error: string; 
 }
 
 /** 这一节会学什么：开始前的依据；有未完成的一节时显示它的进度 */
-function NextContents({ preview }: { preview: Preview | null }) {
+/**
+ * 这一节会学什么：始终预览"按当前所选范围组装的新内容"。
+ * 未完成的那一节只出现在上面的续课面板里；这里绝不改显示它，
+ * 否则用户会以为新范围里就是这些旧内容。
+ */
+export function NextContents({ preview, scopeName }: { preview: Preview | null; scopeName: string }) {
   return (
     <>
       <header>
         <h2 id="next-title">
-          {preview?.open ? '上一节的进度' : preview?.capped ? '今天已达到学习上限' : '这一节会学什么'}
-          {preview && !preview.open && !preview.capped && preview.items.length > 0 && <span className="chip">约 {preview.estMinutes} 分钟</span>}
+          {preview?.capped ? '今天已达到学习上限' : '这一节会学什么'}
+          {preview && !preview.capped && preview.items.length > 0 && <span className="chip">约 {preview.estMinutes} 分钟</span>}
         </h2>
-        {preview && !preview.open && !preview.capped && <span className="meta">时长上限 {preview.budgetMinutes} 分钟</span>}
-        {preview?.open && <span className="meta num">已做 {preview.open.items.filter((i) => i.done && !i.excluded).length} / {preview.open.items.filter((i) => !i.excluded).length}</span>}
+        {preview && !preview.capped && <span className="meta">范围：{scopeName} · 时长上限 {preview.budgetMinutes} 分钟</span>}
       </header>
-      <SessionContents preview={preview && preview.capped && !preview.open ? { ...preview, items: [] } : preview} />
+      <SessionContents
+        preview={preview && preview.capped ? { ...preview, items: [] } : preview}
+        source="next"
+      />
+      {preview && preview.dueCount !== undefined && (
+        <p className="muted small" style={{ marginTop: 10 }}>范围内今天到期 {preview.dueCount} 个知识点。</p>
+      )}
     </>
   );
 }
@@ -229,7 +345,7 @@ function Reminders({ today }: { today: Today | null }) {
     <>
       <header>
         <h2 id="slots-title">今天的提醒</h2>
-        <a className="card-link" href={routeHash({ name: 'settings' })}>
+        <a className="card-link" href={routeHash({ name: 'personalization', tab: 'learning' })}>
           设置
           <Icon name="chevron" />
         </a>

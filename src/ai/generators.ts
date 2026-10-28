@@ -27,6 +27,11 @@ import {
 import type { StructuredModel } from './gateway';
 import { type TopicBrief, describeTopicBrief } from '../shared/topic-planning';
 import { type ContentGuidance, DEFAULT_CONTENT_GUIDANCE } from '../shared/content-guidance';
+import {
+  type TeachingContext,
+  teachingContextForGrading,
+  teachingContextSection,
+} from './teaching-context';
 import { diagramGuide, lessonFigureGuide } from './writing-style';
 
 const BASE_SYSTEM = `你是"微课堂"的教学设计者。微课堂帮助学习者利用碎片时间真正学会、能用、长期不忘一个主题。
@@ -71,15 +76,20 @@ export interface PointContext {
   existingKnowledge?: string[];
 }
 
-/** 生成骨架知识图谱 */
-export function generateGraph(model: StructuredModel, topicTitle: string, learningBrief?: TopicBrief | null): Promise<Graph> {
+/** 生成骨架知识图谱。teaching 为所属学科的教学上下文，省略时保持原有提示词 */
+export function generateGraph(
+  model: StructuredModel,
+  topicTitle: string,
+  learningBrief?: TopicBrief | null,
+  teaching?: TeachingContext | null,
+): Promise<Graph> {
   return model.generate({
     name: 'knowledge_graph',
     schema: GraphSchema,
     system: SYSTEM,
     prompt: `请为学习主题「${topicTitle}」生成骨架知识图谱。
 ${learningBrief ? `\n用户已确认的学习目标：\n${describeTopicBrief(learningBrief)}\n知识点应服务于这个目的和范围，不因主题名称较宽泛而扩成通用课程；保留达成目标必需的前置。\n` : ''}
-
+${teachingContextSection(teaching)}${teaching ? '\n知识点的划分与命名要符合这个学科的通常表达方式。\n' : ''}
 要求：
 1. 给出 15~30 个知识点。每个知识点都能单独教授、单独检验，粒度足够细；不要用"基础""进阶"这类只是分组的空节点。
 2. 知识点按推荐学习顺序排列。key 用简短的英文短横线格式，例如 "union-types"。
@@ -227,12 +237,13 @@ const FEEDBACK_RULES = `- feedback：用"你"称呼学习者，2~4 句话，按�
   - 学习者的作答有错误前提时，直接指出并给出正确理解。
   - 最后可以给一个马上能做的小动作，例如"对照参考答案第 2 个要点再看一遍"。`;
 
-/** 批改开放题：简答、补全、修正 */
+/** 批改开放题：简答、补全、修正。teaching 只用于说明学科背景，判定标准与输出结构不变 */
 export function gradeOpenAnswer(
   model: StructuredModel,
   ctx: Pick<PointContext, 'topicTitle' | 'title'>,
   question: OpenQuestion,
   answer: string,
+  teaching?: TeachingContext | null,
 ): Promise<Grade> {
   return model.generate({
     name: 'grade',
@@ -241,7 +252,7 @@ export function gradeOpenAnswer(
     prompt: `请批改学习者的作答。
 
 学习主题：${ctx.topicTitle}
-知识点：${ctx.title}
+知识点：${ctx.title}${teachingContextForGrading(teaching)}
 ${describeOpenQuestion(question)}
 参考答案：${question.referenceAnswer}
 判定要点：
@@ -268,6 +279,7 @@ export function gradeConnection(
   ctx: { topicTitle: string; title: string; summary: string; partner: string },
   prompt: string,
   answer: string,
+  teaching?: TeachingContext | null,
 ): Promise<ConnectionGrade> {
   return model.generate({
     name: 'connection_grade',
@@ -277,7 +289,7 @@ export function gradeConnection(
 
 学习主题：${ctx.topicTitle}
 刚学的知识点：${ctx.title}（${ctx.summary}）
-另一个知识：${ctx.partner}
+另一个知识：${ctx.partner}${teachingContextForGrading(teaching)}
 题目：${prompt}
 
 学习者的说明：
@@ -298,6 +310,7 @@ export function judgeAppeal(
   model: StructuredModel,
   ctx: Pick<PointContext, 'topicTitle' | 'title'>,
   input: { question: Question; answer: string; originalFeedback: string; reason: string },
+  teaching?: TeachingContext | null,
 ): Promise<AppealVerdict> {
   return model.generate({
     name: 'appeal',
@@ -306,7 +319,7 @@ export function judgeAppeal(
     prompt: `学习者对一次批改提出申诉，请重新判定。
 
 学习主题：${ctx.topicTitle}
-知识点：${ctx.title}
+知识点：${ctx.title}${teachingContextForGrading(teaching)}
 题目（JSON，含参考答案）：
 ${JSON.stringify(input.question, null, 2)}
 
@@ -333,14 +346,14 @@ feedback：用"你"称呼学习者，2~3 句话，说清判定的理由；改判
 /** 拆解：为反复失败的知识点生成 1~3 个更基础的前置知识点 */
 export function decomposePoint(
   model: StructuredModel,
-  ctx: PointContext & { existingTitles: string[] },
+  ctx: PointContext & { existingTitles: string[]; teaching?: TeachingContext | null },
 ): Promise<Decomposition> {
   return model.generate({
     name: 'decomposition',
     schema: DecompositionSchema,
     system: SYSTEM,
     prompt: `${describePoint(ctx)}
-
+${teachingContextSection(ctx.teaching, '学科教学要求')}
 学习者在这个知识点上已经连续答错多次，说明它对他来说跨度太大。请找出学懂它之前必须先掌握、但学习者很可能还不会的 1~3 个更基础的知识点。
 - 每个都要比原知识点更基础、更小，能单独教授、单独检验。
 - 不要与已有的这些知识点重复：${ctx.existingTitles.join('、')}
@@ -356,6 +369,7 @@ export function preparePlacement(
     background: string;
     points: { id: string; title: string; summary: string }[];
     probeIds: string[];
+    teaching?: TeachingContext | null;
   },
   random: () => number = Math.random,
 ): Promise<PlacementPlan> {
@@ -369,7 +383,7 @@ export function preparePlacement(
     name: 'placement',
     schema: placementSchema(input.probeIds),
     system: SYSTEM,
-    prompt: `学习者要开始学习「${input.topicTitle}」。开始前做一次约 3 分钟的摸底，确定他已经会什么、从哪里开始学。
+    prompt: `学习者要开始学习「${input.topicTitle}」。开始前做一次约 3 分钟的摸底，确定他已经会什么、从哪里开始学。${teachingContextSection(input.teaching)}
 
 学习者的背景自述：
 """
@@ -402,13 +416,14 @@ export async function generateCheatsheet(
     points: { title: string; summary: string; topicTitle: string; explanation: string | null }[];
     confusablePairs: [string, string][];
     connections: { from: string; to: string; quote: string }[];
+    teaching?: TeachingContext | null;
   },
 ): Promise<string> {
   const { markdown } = await model.generate({
     name: 'cheatsheet',
     schema: CheatsheetSchema,
     system: SYSTEM,
-    prompt: `请为学习者生成一份知识速查表（Markdown），范围：${input.scopeTitle}。速查表用于日后快速回顾和查用，不是教程。
+    prompt: `请为学习者生成一份知识速查表（Markdown），范围：${input.scopeTitle}。速查表用于日后快速回顾和查用，不是教程。${teachingContextSection(input.teaching)}
 
 收录的知识点（标题 —— 概要；后面附学习者学过的讲解原文，供你提炼要点）：
 ${input.points.map((p) => `### ${p.title}（${p.topicTitle}）\n${p.summary}\n${p.explanation ? `讲解原文：\n${p.explanation.slice(0, 1500)}` : ''}`).join('\n\n')}
@@ -438,6 +453,8 @@ export interface AskContext {
   questionText: string | null;
   /** 小题是否已经作答：作答前不直接给出答案 */
   answered: boolean;
+  /** 所属学科的教学上下文；省略时保持原有提示词 */
+  teaching?: TeachingContext | null;
 }
 
 /** 回答学习时的提问：结合正在学的内容，简明作答；小题作答前只引导、不给答案 */
@@ -450,7 +467,7 @@ export async function answerQuestion(
     ? `学习者正在学：
 学习主题：${ctx.topicTitle}
 知识点：${ctx.title}（${ctx.summary}）
-${ctx.explanation ? `正在读的讲解：\n${ctx.explanation.slice(0, 2500)}\n` : ''}${ctx.questionText ? `当前小题（${ctx.answered ? '已作答' : '还没作答'}）：\n${ctx.questionText.slice(0, 1500)}\n` : ''}`
+${ctx.explanation ? `正在读的讲解：\n${ctx.explanation.slice(0, 2500)}\n` : ''}${ctx.questionText ? `当前小题（${ctx.answered ? '已作答' : '还没作答'}）：\n${ctx.questionText.slice(0, 1500)}\n` : ''}${teachingContextSection(ctx.teaching, '学科表达习惯')}`
     : '学习者在学习过程中提问。';
   const { answer } = await model.generate({
     name: 'answer',
@@ -476,7 +493,7 @@ ${input.question}
 /** 从学习者的提问中整理出还不了解、值得单独学习的知识点（0~4 个） */
 export async function suggestKnowledge(
   model: StructuredModel,
-  ctx: { topicTitle: string; title: string; summary: string; existingTitles: string[] },
+  ctx: { topicTitle: string; title: string; summary: string; existingTitles: string[]; teaching?: TeachingContext | null },
   asks: { question: string; answer: string }[],
   hint?: string,
 ): Promise<KnowledgeSuggestion[]> {
@@ -484,7 +501,7 @@ export async function suggestKnowledge(
     name: 'knowledge_suggestion',
     schema: KnowledgeSuggestionSchema,
     system: SYSTEM,
-    prompt: `学习者在学「${ctx.topicTitle}」的知识点「${ctx.title}」（${ctx.summary}）时提了下面这些问题。请从中找出学习者还不了解、值得以后单独学一学的知识，整理成知识点加入他的认知地图。
+    prompt: `学习者在学「${ctx.topicTitle}」的知识点「${ctx.title}」（${ctx.summary}）时提了下面这些问题。请从中找出学习者还不了解、值得以后单独学一学的知识，整理成知识点加入他的认知地图。${teachingContextSection(ctx.teaching, '学科教学要求')}
 
 学习者的提问和得到的回答：
 ${asks.map((a, i) => `${i + 1}. 问：${a.question}\n   答：${a.answer.slice(0, 600)}`).join('\n')}

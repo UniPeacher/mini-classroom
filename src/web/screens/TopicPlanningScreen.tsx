@@ -2,12 +2,14 @@ import { useEffect, useRef, useState } from 'react';
 import { api, type TopicDraft } from '../api';
 import { TopicBrief } from '../components/TopicBrief';
 import { useResource } from '../hooks';
+import { coursePath, useOrganization } from '../organization';
 import { RichMarkdown } from '../RichMarkdown';
 import { navigate, routeHash } from '../router';
 
 /** 专门的需求澄清页：已发送的对话保存在服务端，确认后才进入正式学习主题。 */
-export function TopicPlanningScreen({ draftId, onTopicsChanged }: { draftId: string; onTopicsChanged: () => void }) {
+export function TopicPlanningScreen({ draftId }: { draftId: string }) {
   const resource = useResource(() => api.topicDraft(draftId), [draftId]);
+  const organization = useOrganization();
   const [draft, setDraft] = useState<TopicDraft | null>(null);
   const [message, setMessage] = useState('');
   const [action, setAction] = useState<'' | 'send' | 'reply' | 'confirm'>('');
@@ -20,9 +22,9 @@ export function TopicPlanningScreen({ draftId, onTopicsChanged }: { draftId: str
   useEffect(() => { if (resource.data) setDraft(resource.data); }, [resource.data]);
   useEffect(() => {
     if (!draft?.topicId) return;
-    onTopicsChanged();
+    void organization.reload();
     navigate({ name: 'topic', topicId: draft.topicId });
-  }, [draft?.topicId, onTopicsChanged]);
+  }, [draft?.topicId, organization.reload]);
 
   async function recover(cause: unknown) {
     setError((cause as Error).message);
@@ -103,6 +105,7 @@ export function TopicPlanningScreen({ draftId, onTopicsChanged }: { draftId: str
         <div><h1>先聊清楚，你想学会什么。</h1><p className="sub">一起明确学习目的和范围，你可以随时补充或纠正。</p></div>
       </header>
       <p className="topic-planning-note muted small">已发送的对话会自动保存；确认后才加入学习计划。</p>
+      {draft?.courseId && <p className="muted small">将加入课程：<span className="pill accent">{coursePath(organization.data, draft.courseId)}</span></p>}
       {resource.error && <p className="error-text" role="alert">{resource.error} <button type="button" className="card-link" onClick={resource.reload}>重新加载</button></p>}
       {!draft && !resource.error && <p className="muted" role="status">正在读取讨论…</p>}
       {draft && <>

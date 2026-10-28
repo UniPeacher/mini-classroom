@@ -1,6 +1,7 @@
 import { type GraphPoint, cognitiveEdge, prerequisitesSatisfied } from './edge';
 import { CONTRAST_FORM, isMobileForm } from './forms';
 import { type MemoryState, UNLEARNED, isDue, retrievability } from './memory';
+import { ALL_SCOPE, type LearningScope, scopeIncludes } from './scope';
 
 /** 候选池中的一项内容（组装只关心这些字段） */
 export interface PoolItem {
@@ -23,7 +24,11 @@ export interface AssembleInput {
   maxNewPerSession: number;
   /** 这一节的新知识点来自哪个主题；不传时不限主题 */
   newTopicId?: string | null;
-  /** 只在指定学科内组装：复习、抽查、推进、新学都只取该标签下的知识点。不传或为 null 时不限 */
+  /** 只在指定范围（学科或课程）内组装：复习、抽查、推进、新学都只取范围内的知识点。缺省为全部 */
+  scope?: LearningScope;
+  /**
+   * 兼容旧接口：按主题的学科标签限定范围。scope 存在时以 scope 为准。
+   */
   subject?: string | null;
   /** 在手机上打开：只挑适合手机的形式 */
   mobile?: boolean;
@@ -53,10 +58,12 @@ const DEFAULT_REVIEW_SECONDS = 60;
  * 5. 几类内容穿插排列；同一知识点优先选与上次不同的形式；手机上只选适合手机的形式。
  */
 export function assemble(input: AssembleInput): AssembleResult {
-  const { points, states, pool, now, budgetSeconds, maxNewPerSession, newTopicId, subject = null, mobile = false, timeFactor = 1 } = input;
+  const { points, states, pool, now, budgetSeconds, maxNewPerSession, newTopicId, scope = ALL_SCOPE, subject = null, mobile = false, timeFactor = 1 } = input;
   const stateOf = (id: string) => states.get(id) ?? UNLEARNED;
-  // 指定学科时，四类内容都只从该学科的知识点里挑；不指定时和原来一样跨主题
-  const inScope = (p: GraphPoint) => subject === null || p.subject === subject;
+  // 指定范围（学科或课程）时，四类内容都只从范围内的知识点里挑；不指定时和原来一样跨主题。
+  // 旧接口按学科标签传 subject 时仍按标签过滤，便于已有调用方和测试平滑过渡。
+  const inScope = (p: GraphPoint) =>
+    subject !== null ? p.subject === subject : scope.kind === 'all' ? true : scopeIncludes(scope, p);
   const included = points.filter((p) => !p.excluded && inScope(p));
   const excludedIds = new Set(points.filter((p) => p.excluded).map((p) => p.id));
   const byPosition = new Map(points.map((p) => [p.id, p.position]));

@@ -4,34 +4,23 @@ import { useResource } from '../hooks';
 import { notificationPermission, requestNotificationPermission, showReminder } from '../reminders';
 import { Section } from '../components/SettingsSection';
 import { type PersonalizationTab, navigate } from '../router';
+import { useDraftGuard } from '../drafts';
+import { presetCatalog } from '../organization';
 import { ContentGuidanceSettings } from './ContentGuidanceSettings';
-import { SubjectStyleSettings } from './SubjectStyleSettings';
 
 /** 学习偏好和提示词分开展示，切换标签时保留正在编辑的内容。 */
 export function PersonalizationScreen({ tab }: { tab: PersonalizationTab }) {
   const resource = useResource(() => api.settings(), []);
-  const subjects = useResource(() => api.listSubjects().then((r) => r.subjects), []);
   const [settings, setSettings] = useState<UserSettings | null>(null);
   const [stamp, setStamp] = useState('');
   const [error, setError] = useState('');
-  // 用户最近点选的学科风格：下方引导词区据此展示合并后的完整提示词
-  const [previewStyle, setPreviewStyle] = useState<string | null>(null);
+  // 提示词编辑区的未保存状态：切换页面时由全局守卫提醒
+  const [guidanceDirty, setGuidanceDirty] = useState(false);
+  useDraftGuard(guidanceDirty, '共用表达规则还没保存');
+
   useEffect(() => {
     if (resource.data) setSettings(resource.data.settings);
   }, [resource.data]);
-
-  // 预览：通用引导词 + 所选风格追加的学科要求，与生成时实际发给模型的文字一致
-  const preview = (() => {
-    if (!resource.data || !previewStyle) return null;
-    const option = resource.data.subjectStyles.find((o) => o.id === previewStyle);
-    if (!option) return null;
-    const merged = (base: string, extra: string) => (extra.trim() ? `${base.trimEnd()}\n\n${extra.trim()}` : base);
-    return {
-      label: option.label,
-      tutorial: merged(settings?.tutorialGuidance ?? resource.data.guidanceDefaults.tutorialGuidance, option.tutorial),
-      figure: merged(settings?.figureGuidance ?? resource.data.guidanceDefaults.figureGuidance, option.figure),
-    };
-  })();
 
   function selectTab(next: PersonalizationTab) {
     navigate({ name: 'personalization', tab: next });
@@ -66,12 +55,14 @@ export function PersonalizationScreen({ tab }: { tab: PersonalizationTab }) {
     }
   }
 
+  const presets = presetCatalog(resource.data);
+
   return (
     <>
       <div className="title-row">
         <div>
           <h1>个性化</h1>
-          <p className="sub">调整学习安排，以及教程和配图的表达方式。</p>
+          <p className="sub">调整学习安排，以及所有学科共用的表达方式。</p>
         </div>
         <span className="muted small" role="status">
           {error ? <span className="error-text">{error}</span> : stamp}
@@ -96,23 +87,12 @@ export function PersonalizationScreen({ tab }: { tab: PersonalizationTab }) {
             <Revisit settings={settings} save={save} />
           </div>
           <div role="tabpanel" id="personalization-panel-prompts" aria-labelledby="personalization-tab-prompts" hidden={tab !== 'prompts'}>
-            <SubjectStyleSettings
-              settings={settings}
-              options={resource.data.subjectStyles}
-              tags={subjects.data ?? []}
-              onPreviewStyle={setPreviewStyle}
-              onSaved={(saved) => {
-                setSettings((current) => current && { ...current, subjectGroups: saved.subjectGroups, tagStyles: saved.tagStyles });
-                void subjects.reload();
-                setError('');
-                setStamp('学科标签设置已保存');
-              }}
-            />
             <ContentGuidanceSettings
               settings={settings}
               defaults={resource.data.guidanceDefaults}
               maxLength={resource.data.guidanceMaxLength}
-              preview={preview}
+              presets={presets}
+              onDirtyChange={setGuidanceDirty}
               onSaved={(saved) => {
                 setSettings((current) => current && {
                   ...current,
@@ -120,7 +100,7 @@ export function PersonalizationScreen({ tab }: { tab: PersonalizationTab }) {
                   figureGuidance: saved.figureGuidance,
                 });
                 setError('');
-                setStamp('引导词已保存');
+                setStamp('共用表达规则已保存');
               }}
             />
           </div>

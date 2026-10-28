@@ -3,7 +3,7 @@ import { Hono } from 'hono';
 import { z } from 'zod';
 import { AiSettingsPatchSchema } from '../ai-settings';
 import { CORE_FORMS, EXPLAIN_FORMS, QUESTION_FORMS } from '../domain/forms';
-import { UserSettingsSchema } from '../settings';
+import { UserSettingsPatchSchema } from '../settings';
 import { SUBJECT_STYLES } from '../shared/subject-styles';
 import { TopicIdeaSchema } from '../shared/topic-planning';
 import type { Services } from './services';
@@ -22,8 +22,12 @@ export interface AppDeps {
 
 const STAGES = ['unlearned', 'inferred', 'understand', 'recall', 'apply', 'retain'] as const;
 
-const TopicBody = z.object({ title: z.string().trim().min(1, '请输入学习主题').max(100, '主题名称不超过 100 字') });
-const TopicDraftBody = z.object({ idea: TopicIdeaSchema });
+const TopicBody = z.object({
+  title: z.string().trim().min(1, '请输入学习主题').max(100, '主题名称不超过 100 字'),
+  // 从某门课程发起时直接归入该课程
+  courseId: z.string().optional(),
+});
+const TopicDraftBody = z.object({ idea: TopicIdeaSchema, courseId: z.string().nullable().optional() });
 const DraftRevisionBody = z.object({ revision: z.number().int().nonnegative() });
 const TopicMessageBody = DraftRevisionBody.extend({ message: TopicIdeaSchema });
 const TopicPatch = z
@@ -32,23 +36,78 @@ const TopicPatch = z
     priority: z.number().int().min(1).max(3).optional(),
     // null 或空字符串表示清空学科标签
     subject: z.string().trim().max(40, '学科标签不超过 40 字').nullable().optional(),
+    // null 表示取消课程归属，主题回到未归类
+    courseId: z.string().nullable().optional(),
+    // 已经看过影响范围，确认这次归属变化会重新准备内容
+    confirmed: z.boolean().optional(),
   })
-  .refine((p) => p.status !== undefined || p.priority !== undefined || p.subject !== undefined, '没有要修改的内容');
+  .refine(
+    (p) => p.status !== undefined || p.priority !== undefined || p.subject !== undefined || p.courseId !== undefined,
+    '没有要修改的内容',
+  );
 const PlacementBody = z.object({ background: z.string().trim().max(500, '背景自述不超过 500 字') });
 const PlacementAnswerBody = z.object({ pointId: z.string(), choice: z.number().int().min(-1) });
+const ScopeSchema = z
+  .object({
+    kind: z.enum(['all', 'discipline', 'course']),
+    id: z.string().trim().min(1, '请选择具体范围').optional(),
+  })
+  // 学科/课程范围必须带 id：否则请求会被当成"全部范围"，悄悄放大学习范围
+  .refine((scope) => scope.kind === 'all' || scope.id !== undefined, '学科或课程范围需要指定 id');
 const NextSessionBody = z.object({
   // 可选的补充说明；全是空白时当作没写
   guidance: z.string().trim().max(500, '补充说明不超过 500 字').optional(),
   device: z.enum(['desktop', 'mobile']).optional(),
   timeZone: z.string().optional(),
   fresh: z.boolean().optional(),
-  // 只在某个学科内组装这一节；省略或空表示不限
+  // 明确继续未完成的一节
+  resume: z.boolean().optional(),
+  // 组装范围：全部、某个学科或某门课程
+  scope: ScopeSchema.optional(),
+  // 兼容旧接口：只在某个学科标签内组装这一节；有 scope 时忽略
   subject: z.string().trim().max(40, '学科标签不超过 40 字').optional(),
 });
-const PreviewQuery = z.object({
-  device: z.enum(['desktop', 'mobile']).optional(),
-  timeZone: z.string().optional(),
-  subject: z.string().trim().max(40).optional(),
+const PreviewQuery = z
+  .object({
+    device: z.enum(['desktop', 'mobile']).optional(),
+    timeZone: z.string().optional(),
+    scopeKind: z.enum(['all', 'discipline', 'course']).optional(),
+    scopeId: z.string().trim().min(1).optional(),
+    subject: z.string().trim().max(40).optional(),
+  })
+  // 与 POST /api/sessions/next 一致：指定学科/课程时必须带 id
+  .refine((q) => !q.scopeKind || q.scopeKind === 'all' || q.scopeId !== undefined, '学科或课程范围需要指定 id');
+const DisciplineBody = z.object({
+  name: z.string().trim().min(1, '请输入学科名称').max(40, '学科名称不超过 40 字'),
+  presetId: z.enum(SUBJECT_STYLES).optional(),
+});
+const DisciplinePatch = z
+  .object({
+    name: z.string().trim().min(1, '请输入学科名称').max(40, '学科名称不超过 40 字').optional(),
+    presetId: z.enum(SUBJECT_STYLES).optional(),
+    // 用户已经看过影响范围，确认更换内容风格
+    confirmed: z.boolean().optional(),
+  })
+  .refine((p) => p.name !== undefined || p.presetId !== undefined, '没有要修改的内容');
+const CourseBody = z.object({
+  name: z.string().trim().min(1, '请输入课程名称').max(40, '课程名称不超过 40 字'),
+  disciplineId: z.string().min(1, '请选择所属学科'),
+});
+const CoursePatch = z
+  .object({
+    name: z.string().trim().min(1, '请输入课程名称').max(40, '课程名称不超过 40 字').optional(),
+    disciplineId: z.string().min(1).optional(),
+    confirmed: z.boolean().optional(),
+  })
+  .refine((p) => p.name !== undefined || p.disciplineId !== undefined, '没有要修改的内容');
+const CourseTopicsBody = z.object({ topicIds: z.array(z.string()).max(500, '一次最多整理 500 个主题') });
+const ImpactBody = z.object({
+  kind: z.enum(['discipline', 'course', 'topics']),
+  id: z.string().optional(),
+  presetId: z.enum(SUBJECT_STYLES).optional(),
+  disciplineId: z.string().optional(),
+  topicIds: z.array(z.string()).optional(),
+  courseId: z.string().nullable().optional(),
 });
 const AttemptBody = z.object({
   sessionId: z.string(),
@@ -86,34 +145,14 @@ const TimeZoneQuery = z.object({ timeZone: z.string().min(1) });
 const DayParam = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, '日期格式应为 YYYY-MM-DD');
 /**
  * 设置的部分更新：只校验传了的字段。
- * partial() 不会去掉字段上的 .default()，而 zod 对缺省字段会补上默认值（如空数组），
- * 合并时就可能把已保存的配置冲掉。所以这里显式去掉带默认值字段的默认值。
+ * 旧的学科分组字段已停用，提交这些字段会被拒绝并指向"学科与课程"接口。
  */
-const SettingsPatch = z.object({
-  sessionMinutes: UserSettingsSchema.shape.sessionMinutes.optional(),
-  maxNewPerSession: UserSettingsSchema.shape.maxNewPerSession.optional(),
-  reminderTimes: z.array(z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/, '时间格式应为 HH:MM')).max(6, '最多 6 个提醒时段').optional(),
-  dailySessionCap: UserSettingsSchema.shape.dailySessionCap.optional(),
-  revisitIntervalDays: UserSettingsSchema.shape.revisitIntervalDays.optional(),
-  blockedForms: z.array(z.enum([...EXPLAIN_FORMS, ...QUESTION_FORMS]))
-    .refine((forms) => forms.every((f) => !(CORE_FORMS as readonly string[]).includes(f)), '核心检验形式不能屏蔽')
-    .optional(),
-  boostedExplainForms: z.array(z.enum(EXPLAIN_FORMS)).optional(),
-  tutorialGuidance: UserSettingsSchema.shape.tutorialGuidance.optional(),
-  figureGuidance: UserSettingsSchema.shape.figureGuidance.optional(),
-  subjectGroups: z.array(z.object({
-    name: z.string().trim().min(1, '分组名不能为空').max(40, '分组名不超过 40 字'),
-    styleId: z.enum(SUBJECT_STYLES),
-    subjects: z.array(z.string().trim().min(1).max(40)).max(200),
-  })).max(50, '分组不超过 50 个').optional(),
-  tagStyles: z.record(z.string().trim().max(40), z.enum(SUBJECT_STYLES)).optional(),
-  subjectStyles: z.record(z.string().trim().max(40), z.enum(SUBJECT_STYLES)).optional(),
-});
+const SettingsPatch = UserSettingsPatchSchema;
 const AiTestBody = z.object({ target: z.enum(['text', 'image']), patch: AiSettingsPatchSchema.default({}) });
 
 /** 组装 HTTP 应用；依赖由调用方注入，便于测试。 */
 export function createApp({ services, clock, devMode, frontendUrl, webRoot }: AppDeps) {
-  const { learning, topicPlanning, knowledge, placement, preferences, asking, illustrations } = services;
+  const { learning, topicPlanning, knowledge, placement, preferences, asking, illustrations, organization } = services;
   const app = new Hono();
 
   // 只监听本机仍会收到恶意网页的请求；同时限制 Host、来源和浏览器跨站访问。
@@ -155,7 +194,10 @@ export function createApp({ services, clock, devMode, frontendUrl, webRoot }: Ap
   };
 
   app.onError((error, c) => {
-    if (error instanceof LearningError) return c.json({ error: error.message }, error.status);
+    if (error instanceof LearningError) {
+      // 结构化信息（例如未完成课堂与请求范围）供界面区分展示
+      return c.json({ error: error.message, ...(error.code ? { code: error.code } : {}), ...(error.details ?? {}) }, error.status);
+    }
     if (error instanceof z.ZodError) return c.json({ error: error.issues.map((i) => i.message).join('；') }, 400);
     console.error(error);
     return c.json({ error: '服务内部错误' }, 500);
@@ -174,7 +216,10 @@ export function createApp({ services, clock, devMode, frontendUrl, webRoot }: Ap
   // ---------- 学习主题与摸底诊断 ----------
 
   app.get('/api/topic-drafts', c => c.json({ drafts: topicPlanning.list() }));
-  app.post('/api/topic-drafts', async c => c.json(topicPlanning.create((await body(c, TopicDraftBody)).idea, now(c)), 201));
+  app.post('/api/topic-drafts', async c => {
+    const { idea, courseId } = await body(c, TopicDraftBody);
+    return c.json(topicPlanning.create(idea, now(c), courseId), 201);
+  });
   app.get('/api/topic-drafts/:id', c => c.json(topicPlanning.get(c.req.param('id'))));
   app.post('/api/topic-drafts/:id/messages', async c => {
     const { message, revision } = await body(c, TopicMessageBody);
@@ -188,10 +233,31 @@ export function createApp({ services, clock, devMode, frontendUrl, webRoot }: Ap
   );
 
   app.get('/api/topics', (c) => c.json({ topics: learning.listTopics() }));
-  // 学科标签汇总：前端按学科组织主题、限定一节的学习范围
+  // 学科标签汇总：前端按学科组织主题、限定一节的学习范围（兼容旧接口）
   app.get('/api/subjects', (c) => c.json({ subjects: learning.listSubjects() }));
-  app.post('/api/topics', async (c) => c.json(learning.startTopic((await body(c, TopicBody)).title, now(c)), 201));
+  app.post('/api/topics', async (c) => {
+    const { title, courseId } = await body(c, TopicBody);
+    return c.json(learning.startTopic(title, now(c), courseId), 201);
+  });
   app.patch('/api/topics/:id', async (c) => c.json(learning.updateTopic(c.req.param('id'), await body(c, TopicPatch), now(c))));
+
+  // ---------- 学科、课程与主题归属 ----------
+
+  app.get('/api/organization', (c) => c.json(organization.overview(now(c))));
+  // 保存前的影响评估：只读，说明会重新准备哪些内容
+  app.post('/api/organization/impact', async (c) => c.json(organization.impact(await body(c, ImpactBody))));
+  app.post('/api/disciplines', async (c) => c.json(organization.createDiscipline(await body(c, DisciplineBody), now(c)), 201));
+  app.patch('/api/disciplines/:id', async (c) =>
+    c.json(organization.updateDiscipline(c.req.param('id'), await body(c, DisciplinePatch), now(c))));
+  app.delete('/api/disciplines/:id', (c) => c.json(organization.deleteDiscipline(c.req.param('id'))));
+  app.post('/api/courses', async (c) => c.json(organization.createCourse(await body(c, CourseBody), now(c)), 201));
+  app.patch('/api/courses/:id', async (c) => c.json(organization.updateCourse(c.req.param('id'), await body(c, CoursePatch), now(c))));
+  app.delete('/api/courses/:id', (c) => c.json(organization.deleteCourse(c.req.param('id'))));
+  // 把列出的主题归入这门课程；未列出的主题保持原归属
+  app.put('/api/courses/:id/topics', async (c) =>
+    c.json(organization.assignTopics(c.req.param('id'), (await body(c, CourseTopicsBody)).topicIds, now(c))));
+  // 某门课程实际生效的教学引导词；unclassified 表示未归类主题
+  app.get('/api/courses/:id/guidance', (c) => c.json(organization.guidance(c.req.param('id'))));
 
   app.get('/api/topics/:id/placement', (c) => c.json(placement.status(c.req.param('id'), now(c))));
   app.post('/api/topics/:id/placement', async (c) =>
@@ -206,12 +272,23 @@ export function createApp({ services, clock, devMode, frontendUrl, webRoot }: Ap
   // ---------- 微课堂 ----------
 
   app.get('/api/sessions/preview', (c) => {
-    const { device, timeZone, subject } = PreviewQuery.parse(c.req.query());
-    return c.json(learning.previewNext(now(c), { device, timeZone, subject: subject || null }));
+    const { device, timeZone, scopeKind, scopeId, subject } = PreviewQuery.parse(c.req.query());
+    // 兼容旧接口：只传 subject 时仍按学科标签预览
+    const scope = scopeKind ? { kind: scopeKind, id: scopeId } : undefined;
+    return c.json(learning.previewNext(now(c), { device, timeZone, scope, subject: subject || null }));
   });
   app.post('/api/sessions/next', async (c) => {
-    const { guidance, device, timeZone, fresh, subject } = await body(c, NextSessionBody);
-    return c.json(await learning.nextSession(now(c), { guidance: guidance || undefined, device, timeZone, fresh, subject: subject || null }));
+    const { guidance, device, timeZone, fresh, resume, scope, subject } = await body(c, NextSessionBody);
+    return c.json(await learning.nextSession(now(c), {
+      guidance: guidance || undefined,
+      device,
+      timeZone,
+      fresh,
+      resume,
+      scope,
+      scopeProvided: scope !== undefined,
+      subject: subject || null,
+    }));
   });
   app.post('/api/sessions/:id/finish', (c) => c.json(learning.finishSession(c.req.param('id'), now(c))));
   app.post('/api/attempts', async (c) => c.json(await learning.submitAttempt(await body(c, AttemptBody), now(c)), 201));

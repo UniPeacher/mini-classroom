@@ -1,7 +1,19 @@
 import { describe, expect, it } from 'vitest';
 import type { StructuredModel, StructuredRequest } from '../../src/ai/gateway';
-import { generateGraph, generateLesson, generateReview, gradeOpenAnswer, preparePlacement } from '../../src/ai/generators';
+import {
+  answerQuestion,
+  decomposePoint,
+  generateCheatsheet,
+  generateGraph,
+  generateLesson,
+  generateReview,
+  gradeConnection,
+  gradeOpenAnswer,
+  judgeAppeal,
+  preparePlacement,
+} from '../../src/ai/generators';
 import { ILLUSTRATION_GUIDE } from '../../src/ai/illustration-style';
+import { teachingContextLabel, teachingContextOf } from '../../src/ai/teaching-context';
 import { diagramGuide, lessonFigureGuide } from '../../src/ai/writing-style';
 import { DEFAULT_CONTENT_GUIDANCE } from '../../src/shared/content-guidance';
 import { SHORT } from '../fixtures/fake-model';
@@ -129,3 +141,68 @@ describe('提示词', () => {
     expect(requests[0]!.prompt).toContain('p2：乙（正确选项放在 D，answerIndex 为 3）');
   });
 });
+
+describe('课程教学上下文', () => {
+  const language = teachingContextOf('language', { disciplineName: '语言', courseName: '西班牙语' });
+
+  it('图谱、摸底、拆解、提问、速查带上学科要求，但不含整套教程排版规则', async () => {
+    const { model, requests } = recorder();
+    await generateGraph(model, '西班牙语动词变位', null, language);
+    await preparePlacement(model, { topicTitle: '西班牙语动词变位', background: '', points: [{ id: 'p1', title: '甲', summary: '' }], probeIds: [], teaching: language });
+    await decomposePoint(model, { ...ctx, existingTitles: [], teaching: language });
+    await answerQuestion(model, { ...askCtx, teaching: language }, { question: '为什么这样变位？', history: [] });
+    await generateCheatsheet(model, { scopeTitle: '西语', points: [], confusablePairs: [], connections: [], teaching: language });
+    expect(requests).toHaveLength(5);
+    for (const request of requests) {
+      expect(request.prompt).toContain('例句保留目标语言的原文');
+      expect(request.prompt).toContain('学科：语言');
+      // 排版规则属于教程引导词，不应被塞进这些任务的上下文
+      expect(request.prompt).not.toContain('一句话不超过 30 个字');
+    }
+  });
+
+  it('判分、联结批改与申诉只带学科背景，判定标准与输出结构不变', async () => {
+    const { model, requests } = recorder();
+    await gradeOpenAnswer(model, ctx, SHORT, '我的作答', teachingContextLabel('stem'));
+    await gradeConnection(model, { topicTitle: 'T', title: '甲', summary: '概要', partner: '乙' }, '说说关系', '我的理解', teachingContextLabel('stem'));
+    await judgeAppeal(model, ctx, { question: SHORT, answer: '我的作答', originalFeedback: '判错', reason: '我认为对' }, teachingContextLabel('stem'));
+    expect(requests).toHaveLength(3);
+    for (const request of requests) {
+      expect(request.prompt).toContain('批改标准与输出结构不变');
+      expect(request.prompt).not.toContain('学科补充要求');
+      expect(request.prompt).not.toContain('一句话不超过 30 个字');
+    }
+    // 判定规则仍在
+    expect(requests[0]!.prompt).toContain('判为正确（correct = true）');
+    expect(requests[2]!.prompt).toContain('accepted：学习者的答案也成立');
+  });
+
+  it('不传教学上下文时提示词与改动前一致（向后兼容）', async () => {
+    const { model, requests } = recorder();
+    await generateGraph(model, 'TypeScript 常用技能');
+    await generateGraph(model, 'TypeScript 常用技能', null, null);
+    await preparePlacement(model, { topicTitle: 'T', background: '', points: [], probeIds: [] });
+    await gradeOpenAnswer(model, ctx, SHORT, '我的作答');
+    for (const request of requests) {
+      expect(request.prompt).not.toContain('教学预设');
+    }
+    expect(requests[0]!.prompt).toBe(requests[1]!.prompt);
+  });
+
+  it('default 预设不追加任何学科要求', async () => {
+    const { model, requests } = recorder();
+    await generateGraph(model, 'TypeScript 常用技能', null, teachingContextOf('default'));
+    await decomposePoint(model, { ...ctx, existingTitles: [], teaching: teachingContextOf('default') });
+    for (const request of requests) expect(request.prompt).not.toContain('学科补充要求');
+  });
+});
+
+/** 提问时的上下文：正在学的知识点、讲解原文、未作答的小题 */
+const askCtx = {
+  topicTitle: '西班牙语动词变位',
+  title: '规则动词现在时',
+  summary: '能正确变位',
+  explanation: '讲解原文',
+  questionText: '哪一个是正确变位？',
+  answered: false,
+};

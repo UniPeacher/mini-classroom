@@ -8,7 +8,7 @@ import { StageLadder, StageLegend } from '../components/StageLadder';
 import { useResource } from '../hooks';
 import { masteryBarWidth, masteryHue } from '../../domain/mastery';
 import { STAGE_LABEL, relativeDue } from '../labels';
-import { navigate, routeHash } from '../router';
+import { navigate, routeHash, todayHash } from '../router';
 
 /**
  * 认知地图要回答：我掌握到哪了？下一步能学什么？
@@ -132,7 +132,7 @@ function NextUp({ map }: { map: CognitiveMap }) {
     <section className="panel next-up" aria-labelledby="next-up-title">
       <header>
         <h2 id="next-up-title">接下来</h2>
-        <a className="btn primary small" href={routeHash({ name: 'today' })}>
+        <a className="btn primary small" href={todayHash()}>
           去开始一节
         </a>
       </header>

@@ -4,13 +4,36 @@ import type { TopicBrief, TopicMessage } from '../shared/topic-planning';
 // 时间统一存毫秒时间戳
 const timestamp = (name: string) => integer(name, { mode: 'timestamp_ms' });
 
+/**
+ * 学科：组织的最上层，一套内容风格（presetId）。课程挂在学科下，学习主题挂在课程下。
+ * 旧版的学科标签（topics.subject）、分组与逐标签风格在升级时迁移到这里。
+ */
+export const disciplines = sqliteTable('disciplines', {
+  id: text('id').primaryKey(),
+  name: text('name').notNull(),
+  // 内容风格预设，取值见 shared/subject-styles；default 表示只用全局引导词
+  presetId: text('preset_id').notNull().default('default'),
+  createdAt: timestamp('created_at').notNull(),
+});
+
+/** 课程：属于一个学科；同一学科下的课程共用学科的内容风格 */
+export const courses = sqliteTable('courses', {
+  id: text('id').primaryKey(),
+  disciplineId: text('discipline_id').notNull().references(() => disciplines.id),
+  name: text('name').notNull(),
+  createdAt: timestamp('created_at').notNull(),
+});
+
 /** 学习主题 */
 export const topics = sqliteTable('topics', {
   id: text('id').primaryKey(),
   title: text('title').notNull(),
   learningBrief: text('learning_brief', { mode: 'json' }).$type<TopicBrief>(),
   // 用户自己填的学科标签，用来按学科组织主题、限定一节的学习范围；空表示未归类
+  // 兼容字段：新的组织关系用 courseId 表达，subject 保留给旧接口读取
   subject: text('subject'),
+  // 所属课程；空表示还没归入课程。学科通过 course -> discipline 推导
+  courseId: text('course_id').references(() => courses.id),
   // 暂停的主题不再新学，复习照常进行
   status: text('status', { enum: ['active', 'paused'] }).notNull().default('active'),
   // 新学按优先级轮换：1 低、2 中、3 高
@@ -30,6 +53,8 @@ export const topicDrafts = sqliteTable('topic_drafts', {
   messages: text('messages', { mode: 'json' }).$type<TopicMessage[]>().notNull(),
   brief: text('brief', { mode: 'json' }).$type<TopicBrief>(),
   revision: integer('revision').notNull().default(0),
+  // 从哪个课程发起的澄清；确认成正式主题时沿用这个归属
+  courseId: text('course_id').references(() => courses.id),
   topicId: text('topic_id').references(() => topics.id),
   createdAt: timestamp('created_at').notNull(),
   updatedAt: timestamp('updated_at').notNull(),
@@ -91,6 +116,8 @@ export const items = sqliteTable('items', {
   questionForm: text('question_form').notNull(),
   content: text('content', { mode: 'json' }).notNull(),
   estSeconds: integer('est_seconds').notNull(),
+  // 生成时实际生效的教学配置指纹（引导词 + 学科预设）；配置变了据此判断内容是否过期
+  guidanceFingerprint: text('guidance_fingerprint'),
   status: text('status', { enum: ['pooled', 'used', 'void'] }).notNull().default('pooled'),
   createdAt: timestamp('created_at').notNull(),
 });
@@ -118,6 +145,11 @@ export const sessions = sqliteTable('sessions', {
   device: text('device', { enum: ['desktop', 'mobile'] }).notNull().default('desktop'),
   // 开始时写的补充说明
   guidance: text('guidance'),
+  // 这一节的组装范围快照：全部、某个学科、某门课程。id 为空时表示全部
+  scopeKind: text('scope_kind', { enum: ['all', 'discipline', 'course'] }).notNull().default('all'),
+  scopeId: text('scope_id'),
+  // 打开这一节时范围的名字快照；之后改名不影响已经开始的这一节
+  scopeLabel: text('scope_label'),
 });
 
 /** 一节微课堂包含的内容与顺序 */

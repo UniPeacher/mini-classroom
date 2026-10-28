@@ -6,7 +6,7 @@ import { enqueue } from '../jobs/queue';
 import { TopicIdeaSchema, type TopicMessage } from '../shared/topic-planning';
 import type { Db } from '../store/db';
 import { createTopic } from '../store/repo';
-import { topicDrafts } from '../store/schema';
+import { courses, topicDrafts } from '../store/schema';
 import { LearningError } from './views';
 
 type TopicDraft = typeof topicDrafts.$inferSelect;
@@ -27,10 +27,15 @@ export function createTopicPlanning({ db, model }: { db: Db; model: StructuredMo
       .from(topicDrafts).where(isNull(topicDrafts.topicId)).orderBy(desc(topicDrafts.updatedAt)).all();
   }
 
-  function create(idea: string, now: Date) {
+  function create(idea: string, now: Date, courseId?: string | null) {
     const text = TopicIdeaSchema.parse(idea);
+    if (courseId && !db.select({ id: courses.id }).from(courses).where(eq(courses.id, courseId)).get()) {
+      throw new LearningError('课程不存在', 404);
+    }
     const id = randomUUID();
-    db.insert(topicDrafts).values({ id, idea: text, messages: [{ role: 'user', content: text }], createdAt: now, updatedAt: now }).run();
+    db.insert(topicDrafts)
+      .values({ id, idea: text, messages: [{ role: 'user', content: text }], courseId: courseId ?? null, createdAt: now, updatedAt: now })
+      .run();
     return get(id);
   }
 
@@ -100,7 +105,8 @@ export function createTopicPlanning({ db, model }: { db: Db; model: StructuredMo
         const latest = get(id);
         if (latest.topicId) return { topicId: latest.topicId };
         requireEditable(latest, revision);
-        const topicId = createTopic(tx, result.title, now, brief);
+        // 从某个课程发起的澄清：确认成正式主题时沿用这个归属
+        const topicId = createTopic(tx, result.title, now, brief, undefined, latest.courseId ?? null);
         enqueue(tx, 'generate_graph', { topicId }, now);
         tx.update(topicDrafts).set({ topicId, revision: revision + 1, updatedAt: now }).where(eq(topicDrafts.id, id)).run();
         return { topicId };

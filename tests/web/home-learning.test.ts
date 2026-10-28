@@ -41,7 +41,7 @@ describe('首页的今日学习入口', () => {
 
   it('恢复未完成的一节优先于开新一节，只预览尚待完成且未排除的内容', () => {
     const preview: Preview = { ...ready, capped: true, open: {
-      id: 'open', startedAt: '2026-10-23T00:00:00Z', items: [
+      id: 'open', startedAt: '2026-10-23T00:00:00Z', scope: { kind: 'course', id: 'c1', label: '理工科 / 液压传动' }, items: [
         { ...ready.items[0]!, title: '已完成的内容', done: true, excluded: false },
         { ...ready.items[0]!, title: '已排除的内容', done: true, excluded: true },
         { ...ready.items[1]!, title: '尚待学习的内容', done: false, excluded: false },
@@ -51,10 +51,12 @@ describe('首页的今日学习入口', () => {
     expect(html).toContain('继续这一节');
     expect(html).toContain('还剩 1 项');
     expect(html).toContain('尚待学习的内容');
+    // 续课面板要显示原始范围，不能让用户以为按当前选择恢复
+    expect(html).toContain('原范围：理工科 / 液压传动');
     expect(html).not.toContain('已完成的内容');
     expect(html).not.toContain('已排除的内容');
     expect(html).not.toContain('约 8 分钟');
-    const today = renderToStaticMarkup(createElement(SessionContents, { preview }));
+    const today = renderToStaticMarkup(createElement(SessionContents, { preview, source: 'open' }));
     expect(today).toContain('已完成的内容');
     expect(today).toContain('已排除的内容');
     expect(today).toContain('不学');

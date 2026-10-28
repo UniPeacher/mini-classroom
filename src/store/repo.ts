@@ -6,13 +6,20 @@ import { type MemoryState, reviveCard } from '../domain/memory';
 import type { ConnectionContent, Graph, LessonContent, ReviewContent } from '../shared/content';
 import type { TopicBrief } from '../shared/topic-planning';
 import type { Executor } from './db';
-import { existingKnowledge, items, knowledgePoints, memoryStates, relations, topics } from './schema';
+import { courses, disciplines, existingKnowledge, items, knowledgePoints, memoryStates, relations, topics } from './schema';
 
 // ---------- 学习主题与知识图谱 ----------
 
-export function createTopic(db: Executor, title: string, now: Date, learningBrief?: TopicBrief, subject?: string | null): string {
+export function createTopic(
+  db: Executor,
+  title: string,
+  now: Date,
+  learningBrief?: TopicBrief,
+  subject?: string | null,
+  courseId?: string | null,
+): string {
   const id = randomUUID();
-  db.insert(topics).values({ id, title, learningBrief, subject: subject ?? null, createdAt: now }).run();
+  db.insert(topics).values({ id, title, learningBrief, subject: subject ?? null, courseId: courseId ?? null, createdAt: now }).run();
   return id;
 }
 
@@ -70,8 +77,14 @@ export interface PointInfo extends GraphPoint {
   topicId: string;
   excluded: boolean;
   topicTitle: string;
-  /** 所属主题的学科标签；未归类时为 null */
+  /** 所属主题的学科标签；未归类时为 null（兼容旧接口） */
   topicSubject: string | null;
+  /** 所属课程；还没归入课程时为 null */
+  courseId: string | null;
+  /** 所属学科：由主题的课程推导；未归类时为 null */
+  disciplineId: string | null;
+  /** 所属学科选定的内容风格预设；未归类时为 default */
+  presetId: string;
   learningBrief?: TopicBrief | null;
   title: string;
   summary: string;
@@ -88,14 +101,22 @@ export interface PointInfo extends GraphPoint {
  */
 export function loadPoints(db: Executor): PointInfo[] {
   const rows = db
-    .select({ point: knowledgePoints, topic: topics, excluded: memoryStates.excluded })
+    .select({
+      point: knowledgePoints,
+      topic: topics,
+      excluded: memoryStates.excluded,
+      disciplineId: courses.disciplineId,
+      presetId: disciplines.presetId,
+    })
     .from(knowledgePoints)
     .innerJoin(topics, eq(knowledgePoints.topicId, topics.id))
     .innerJoin(memoryStates, eq(knowledgePoints.id, memoryStates.knowledgePointId))
+    .leftJoin(courses, eq(topics.courseId, courses.id))
+    .leftJoin(disciplines, eq(courses.disciplineId, disciplines.id))
     .where(eq(topics.graphStatus, 'ready'))
     .all();
   const allRelations = db.select().from(relations).all();
-  return rows.map(({ point, topic, excluded }) => ({
+  return rows.map(({ point, topic, excluded, disciplineId, presetId }) => ({
     id: point.id,
     excluded,
     position: point.position,
@@ -103,6 +124,9 @@ export function loadPoints(db: Executor): PointInfo[] {
     topicTitle: topic.title,
     topicSubject: topic.subject ?? null,
     subject: topic.subject ?? null,
+    courseId: topic.courseId ?? null,
+    disciplineId: disciplineId ?? null,
+    presetId: presetId ?? 'default',
     learningBrief: topic.learningBrief,
     learnable: topic.status === 'active' && (topic.placementStatus === 'done' || topic.placementStatus === 'skipped'),
     decomposed: point.origin === 'decomposed',
@@ -172,7 +196,17 @@ export type ItemContent = LessonContent | ReviewContent | ConnectionContent;
 
 export function insertItem(
   db: Executor,
-  item: { knowledgePointId: string; kind: 'lesson' | 'review' | 'connection'; form: string; questionForm: string; estSeconds: number; content: ItemContent; status?: 'pooled' | 'used' },
+  item: {
+    knowledgePointId: string;
+    kind: 'lesson' | 'review' | 'connection';
+    form: string;
+    questionForm: string;
+    estSeconds: number;
+    content: ItemContent;
+    status?: 'pooled' | 'used';
+    /** 生成时实际生效的教学配置指纹；联结练习等不涉及内容风格时为空 */
+    guidanceFingerprint?: string | null;
+  },
   now: Date,
 ): string {
   const id = randomUUID();

@@ -5,6 +5,7 @@ import { createAsking } from './asking';
 import { createIllustrations } from './illustrations';
 import { createKnowledge } from './knowledge';
 import { createLearning } from './learning';
+import { createOrganization } from './organization';
 import { createPlacement } from './placement';
 import { createPreferences } from './preferences';
 import { createTopicPlanning } from './topic-planning';
@@ -30,6 +31,7 @@ export function createServices(deps: ServiceDeps) {
     preferences: createPreferences(deps),
     asking: createAsking(deps),
     illustrations: createIllustrations(deps),
+    organization: createOrganization({ db: deps.db, settings: deps.settings }),
   };
 }
 
