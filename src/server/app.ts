@@ -25,8 +25,13 @@ const TopicDraftBody = z.object({ idea: TopicIdeaSchema });
 const DraftRevisionBody = z.object({ revision: z.number().int().nonnegative() });
 const TopicMessageBody = DraftRevisionBody.extend({ message: TopicIdeaSchema });
 const TopicPatch = z
-  .object({ status: z.enum(['active', 'paused']).optional(), priority: z.number().int().min(1).max(3).optional() })
-  .refine((p) => p.status !== undefined || p.priority !== undefined, '没有要修改的内容');
+  .object({
+    status: z.enum(['active', 'paused']).optional(),
+    priority: z.number().int().min(1).max(3).optional(),
+    // null 或空字符串表示清空学科标签
+    subject: z.string().trim().max(40, '学科标签不超过 40 字').nullable().optional(),
+  })
+  .refine((p) => p.status !== undefined || p.priority !== undefined || p.subject !== undefined, '没有要修改的内容');
 const PlacementBody = z.object({ background: z.string().trim().max(500, '背景自述不超过 500 字') });
 const PlacementAnswerBody = z.object({ pointId: z.string(), choice: z.number().int().min(-1) });
 const NextSessionBody = z.object({
@@ -35,8 +40,14 @@ const NextSessionBody = z.object({
   device: z.enum(['desktop', 'mobile']).optional(),
   timeZone: z.string().optional(),
   fresh: z.boolean().optional(),
+  // 只在某个学科内组装这一节；省略或空表示不限
+  subject: z.string().trim().max(40, '学科标签不超过 40 字').optional(),
 });
-const PreviewQuery = z.object({ device: z.enum(['desktop', 'mobile']).optional(), timeZone: z.string().optional() });
+const PreviewQuery = z.object({
+  device: z.enum(['desktop', 'mobile']).optional(),
+  timeZone: z.string().optional(),
+  subject: z.string().trim().max(40).optional(),
+});
 const AttemptBody = z.object({
   sessionId: z.string(),
   itemId: z.string(),
@@ -151,6 +162,8 @@ export function createApp({ services, clock, devMode, frontendUrl, webRoot }: Ap
   );
 
   app.get('/api/topics', (c) => c.json({ topics: learning.listTopics() }));
+  // 学科标签汇总：前端按学科组织主题、限定一节的学习范围
+  app.get('/api/subjects', (c) => c.json({ subjects: learning.listSubjects() }));
   app.post('/api/topics', async (c) => c.json(learning.startTopic((await body(c, TopicBody)).title, now(c)), 201));
   app.patch('/api/topics/:id', async (c) => c.json(learning.updateTopic(c.req.param('id'), await body(c, TopicPatch), now(c))));
 
@@ -167,12 +180,12 @@ export function createApp({ services, clock, devMode, frontendUrl, webRoot }: Ap
   // ---------- 微课堂 ----------
 
   app.get('/api/sessions/preview', (c) => {
-    const { device, timeZone } = PreviewQuery.parse(c.req.query());
-    return c.json(learning.previewNext(now(c), { device, timeZone }));
+    const { device, timeZone, subject } = PreviewQuery.parse(c.req.query());
+    return c.json(learning.previewNext(now(c), { device, timeZone, subject: subject || null }));
   });
   app.post('/api/sessions/next', async (c) => {
-    const { guidance, device, timeZone, fresh } = await body(c, NextSessionBody);
-    return c.json(await learning.nextSession(now(c), { guidance: guidance || undefined, device, timeZone, fresh }));
+    const { guidance, device, timeZone, fresh, subject } = await body(c, NextSessionBody);
+    return c.json(await learning.nextSession(now(c), { guidance: guidance || undefined, device, timeZone, fresh, subject: subject || null }));
   });
   app.post('/api/sessions/:id/finish', (c) => c.json(learning.finishSession(c.req.param('id'), now(c))));
   app.post('/api/attempts', async (c) => c.json(await learning.submitAttempt(await body(c, AttemptBody), now(c)), 201));

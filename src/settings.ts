@@ -2,6 +2,7 @@ import { eq } from 'drizzle-orm';
 import { z } from 'zod';
 import { CORE_FORMS, EXPLAIN_FORMS, type FormPrefs, QUESTION_FORMS } from './domain/forms';
 import { type ContentGuidance, DEFAULT_CONTENT_GUIDANCE, GUIDANCE_MAX_LENGTH, resolveContentGuidance } from './shared/content-guidance';
+import { appendStyle, SUBJECT_STYLE_INFO, SUBJECT_STYLES, type SubjectStyleId, styleIdOf } from './shared/subject-styles';
 import type { Executor } from './store/db';
 import { appSettings } from './store/schema';
 
@@ -27,6 +28,8 @@ export const UserSettingsSchema = z.object({
   tutorialGuidance: z.string().trim().max(GUIDANCE_MAX_LENGTH, `教程引导词不超过 ${GUIDANCE_MAX_LENGTH} 字`).nullable(),
   /** null 表示采用默认配图引导词。 */
   figureGuidance: z.string().trim().max(GUIDANCE_MAX_LENGTH, `配图引导词不超过 ${GUIDANCE_MAX_LENGTH} 字`).nullable(),
+  /** 学科标签 → 内容风格预设；没设置的学科按通用处理 */
+  subjectStyles: z.record(z.string().trim().max(40), z.enum(SUBJECT_STYLES)).default({}),
 });
 
 export type UserSettings = z.infer<typeof UserSettingsSchema>;
@@ -41,6 +44,7 @@ export const DEFAULT_USER_SETTINGS: UserSettings = {
   boostedExplainForms: [],
   tutorialGuidance: null,
   figureGuidance: null,
+  subjectStyles: {},
 };
 
 /** 学习流程实际使用的参数：用户设置 + 部署配置 */
@@ -55,7 +59,10 @@ export interface Settings {
   dailySessionCap: number | null;
   revisitIntervalDays: number;
   formPrefs: FormPrefs;
+  /** 全局引导词：学科没有单独设置风格时用它 */
   contentGuidance: ContentGuidance;
+  /** 学科标签 → 内容风格预设 */
+  subjectStyles: Record<string, SubjectStyleId>;
 }
 
 const USER_SETTINGS_KEY = 'user_settings';
@@ -94,6 +101,20 @@ export function toSettings(user: UserSettings, env: NodeJS.ProcessEnv = process.
     revisitIntervalDays: user.revisitIntervalDays,
     formPrefs: { blocked: user.blockedForms, boosted: user.boostedExplainForms },
     contentGuidance: resolveContentGuidance(user),
+    subjectStyles: user.subjectStyles ?? {},
+  };
+}
+
+/**
+ * 某个学科实际使用的引导词：学科选了预设时，把预设的学科要求追加到全局引导词之后。
+ * 预设只补充该学科特有的讲法，通用写作原则始终保留。
+ */
+export function guidanceForSubject(settings: Settings, subject: string | null | undefined): ContentGuidance {
+  const style = SUBJECT_STYLE_INFO[styleIdOf(settings.subjectStyles, subject)];
+  if (!style.tutorial && !style.figure) return settings.contentGuidance;
+  return {
+    tutorialGuidance: appendStyle(settings.contentGuidance.tutorialGuidance, style.tutorial),
+    figureGuidance: appendStyle(settings.contentGuidance.figureGuidance, style.figure),
   };
 }
 

@@ -26,7 +26,7 @@ export function TopicScreen({ topicId, onTopicsChanged }: { topicId: string; onT
   }, [reloadMap, reloadPlacement, onTopicsChanged]);
   usePolling(topic?.graphStatus === 'pending' || placement.data?.status === 'preparing', refresh);
 
-  async function update(patch: { status?: 'active' | 'paused'; priority?: number }) {
+  async function update(patch: { status?: 'active' | 'paused'; priority?: number; subject?: string | null }) {
     setError('');
     try {
       await api.updateTopic(topicId, patch);
@@ -70,6 +70,7 @@ export function TopicScreen({ topicId, onTopicsChanged }: { topicId: string; onT
           </div>
         )}
       </div>
+      <SubjectEditor topicId={topicId} subject={topic.subject ?? null} onSave={(subject) => update({ subject })} />
       {error && <p className="error-text" style={{ marginBottom: 12 }}>{error}</p>}
       {topic.learningBrief && <details className="topic-saved-brief"><summary>已确认的学习目标</summary><TopicBrief brief={topic.learningBrief} /></details>}
       {topic.status === 'paused' && <p className="notice" style={{ marginBottom: 16 }}>这个主题已暂停：不再新学，学过的知识点照常复习。</p>}
@@ -213,5 +214,64 @@ function PlacementPanel({ topicId, state, onChanged }: { topicId: string; state:
       )}
       {error && <p className="error-text" style={{ marginTop: 8 }}>{error}</p>}
     </section>
+  );
+}
+
+/**
+ * 学科标签：用户自己填，用来把主题归到一起、并让一天的课在同一个学科内完成。
+ * 已有的标签做成快捷按钮，避免手打出同义标签（"数学" 和 "数学 " 会变成两个学科）。
+ */
+function SubjectEditor(props: { topicId: string; subject: string | null; onSave: (subject: string | null) => void }) {
+  const { subject, onSave } = props;
+  const subjects = useResource(() => api.listSubjects().then((r) => r.subjects), []);
+  const [editing, setEditing] = useState(false);
+  const [text, setText] = useState(subject ?? '');
+  const known = (subjects.data ?? []).map((s) => s.subject).filter((s) => s !== subject);
+
+  if (!editing) {
+    return (
+      <p className="muted small subject-line" style={{ marginBottom: 12 }}>
+        {subject ? <>学科：<span className="pill accent">{subject}</span></> : '还没有学科标签。加上之后，可以按学科学习，一天只学一个学科。'}
+        <button type="button" className="card-link" style={{ marginLeft: 8 }} onClick={() => { setText(subject ?? ''); setEditing(true); }}>
+          {subject ? '修改' : '添加学科'}
+        </button>
+      </p>
+    );
+  }
+
+  function commit() {
+    onSave(text.trim() || null);
+    setEditing(false);
+  }
+
+  return (
+    <div className="field subject-editor" style={{ marginBottom: 12 }}>
+      <label htmlFor="topic-subject">学科标签</label>
+      <span className="hint">比如「数字信号处理」「液压传动」。留空表示不归类。</span>
+      {known.length > 0 && (
+        <div className="time-chips" style={{ margin: '4px 0' }}>
+          {known.slice(0, 6).map((s) => (
+            <button key={s} type="button" className={`btn small ${text === s ? 'selected' : ''}`} aria-pressed={text === s} onClick={() => setText(text === s ? '' : s)}>
+              {s}
+            </button>
+          ))}
+        </div>
+      )}
+      <div className="actions-row" style={{ marginTop: 6 }}>
+        <input
+          id="topic-subject"
+          className="input"
+          type="text"
+          maxLength={40}
+          value={text}
+          autoFocus
+          placeholder="例如：数字信号处理"
+          onChange={(e) => setText(e.target.value)}
+          onKeyDown={(e) => { if (e.key === 'Enter') commit(); }}
+        />
+        <button type="button" className="btn small" onClick={commit}>保存</button>
+        <button type="button" className="btn small ghost" onClick={() => setEditing(false)}>取消</button>
+      </div>
+    </div>
   );
 }

@@ -7,6 +7,8 @@ export interface GraphPoint {
   prerequisiteIds: string[];
   /** 所属学习主题；每节的新知识点只来自一个主题 */
   topicId?: string;
+  /** 所属主题的学科标签；未归类时为 null。按学科学习时据此限定范围 */
+  subject?: string | null;
   /** 所属主题此刻能否新学：主题暂停、或摸底诊断还没完成时为 false。缺省为 true */
   learnable?: boolean;
   /** 用户选择不学：停止所有学习安排，保留真实掌握阶段。缺省为 false */

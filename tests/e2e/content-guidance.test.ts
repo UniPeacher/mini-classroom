@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import type { StructuredRequest } from '../../src/ai/gateway';
 import { readUserSettings, settingsSource } from '../../src/settings';
 import { loadPool } from '../../src/store/repo';
-import { appSettings, illustrations, items, memoryStates, sessions } from '../../src/store/schema';
+import { appSettings, illustrations, items, knowledgePoints, memoryStates, sessions, topics } from '../../src/store/schema';
 import { createFakeIllustrator } from '../fixtures/fake-model';
 import { DAY1, createHarness } from '../fixtures/harness';
 
@@ -213,5 +213,99 @@ describe('两个内容引导词设置', () => {
       expect(saved.prompt).toContain(CUSTOM.figureGuidance);
       expect(drawing.prompts).toContain(saved.prompt);
     }
+  });
+});
+
+describe('学科内容风格', () => {
+  /** 两个不同学科的主题，各自打上标签 */
+  async function twoSubjects(h: ReturnType<typeof createHarness>) {
+    const dsp = await h.startTopic('离散时间信号');
+    const esp = await h.startTopic('西班牙语动词变位');
+    await h.call('PATCH', `/api/topics/${dsp}`, { subject: '数字信号处理' });
+    await h.call('PATCH', `/api/topics/${esp}`, { subject: '西班牙语' });
+    return { dsp, esp };
+  }
+
+  it('设置接口给出全部预设及其说明', async () => {
+    const h = createHarness();
+    const view = (await h.call('GET', '/api/settings')).body;
+    expect(view.subjectStyles.length).toBeGreaterThanOrEqual(9);
+    const ids = view.subjectStyles.map((s: any) => s.id);
+    expect(ids).toContain('default');
+    expect(ids).toContain('stem');
+    expect(ids).toContain('language');
+    expect(view.subjectStyles.every((s: any) => s.label && s.description)).toBe(true);
+  });
+
+  it('非法预设名被拒绝', async () => {
+    const h = createHarness();
+    expect((await h.call('PUT', '/api/settings', { subjectStyles: { 西语: 'quantum' } })).status).toBe(400);
+    expect((await h.call('PUT', '/api/settings', { subjectStyles: { 西语: 'language' } })).status).toBe(200);
+  });
+
+  it('学科汇总里带上当前选定的风格', async () => {
+    const h = createHarness();
+    await twoSubjects(h);
+    await h.call('PUT', '/api/settings', { subjectStyles: { 西班牙语: 'language' } });
+    const { subjects } = (await h.call('GET', '/api/subjects')).body;
+    expect(subjects.find((s: any) => s.subject === '西班牙语').styleId).toBe('language');
+    expect(subjects.find((s: any) => s.subject === '数字信号处理').styleId).toBe('default');
+  });
+
+  it('切换某学科的风格时，只作废这个学科的内容，其他学科不受影响', async () => {
+    const h = createHarness();
+    await twoSubjects(h);
+    await h.worker.runUntilIdle();
+    const before = loadPool(h.db);
+    expect(before.length).toBeGreaterThan(0);
+
+    // 记录每个候选项属于哪个学科
+    const subjectOfPoint = new Map<string, string | null>();
+    for (const row of h.db.select({ id: knowledgePoints.id, subject: topics.subject }).from(knowledgePoints).innerJoin(topics, eq(knowledgePoints.topicId, topics.id)).all()) {
+      subjectOfPoint.set(row.id, row.subject);
+    }
+    const languageItems = before.filter((i) => subjectOfPoint.get(i.knowledgePointId) === '西班牙语');
+    const others = before.filter((i) => subjectOfPoint.get(i.knowledgePointId) !== '西班牙语');
+    expect(languageItems.length).toBeGreaterThan(0);
+    expect(others.length).toBeGreaterThan(0);
+
+    await h.call('PUT', '/api/settings', { subjectStyles: { 西班牙语: 'language' } });
+
+    const after = loadPool(h.db);
+    // 语言学科的内容被作废，其他学科的内容保持可用
+    expect(after.some((i) => subjectOfPoint.get(i.knowledgePointId) === '西班牙语')).toBe(false);
+    for (const item of others) {
+      expect(after.some((i) => i.id === item.id)).toBe(true);
+    }
+    for (const item of languageItems) {
+      expect(h.db.select().from(items).where(eq(items.id, item.id)).get()!.status).toBe('void');
+    }
+  });
+
+  it('改成同一个风格不会让内容失效', async () => {
+    const h = createHarness();
+    await twoSubjects(h);
+    await h.call('PUT', '/api/settings', { subjectStyles: { 西班牙语: 'language' } });
+    await h.worker.runUntilIdle();
+    const before = loadPool(h.db);
+    expect(before.length).toBeGreaterThan(0);
+    await h.call('PUT', '/api/settings', { subjectStyles: { 西班牙语: 'language' } });
+    expect(loadPool(h.db)).toEqual(before);
+  });
+
+  it('生成内容时按学科使用对应的风格提示词', async () => {
+    const h = createHarness();
+    await twoSubjects(h);
+    await h.call('PUT', '/api/settings', { subjectStyles: { 西班牙语: 'language', 数字信号处理: 'stem' } });
+    h.requests.length = 0;
+    await h.worker.runUntilIdle();
+
+    const systems = h.requests.map((r) => r.system ?? '');
+    expect(systems.length).toBeGreaterThan(0);
+    // 语言主题的讲解带语言学科要求，理工科主题带公式与量纲要求
+    expect(systems.some((s) => s.includes('语言学习'))).toBe(true);
+    expect(systems.some((s) => s.includes('理工科'))).toBe(true);
+    // 每个请求都保留通用写作原则：预设只追加不替换
+    for (const s of systems) expect(s).toContain('写作原则');
   });
 });

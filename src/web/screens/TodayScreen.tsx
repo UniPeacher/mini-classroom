@@ -1,5 +1,5 @@
 import { useCallback, useState } from 'react';
-import { type Preview, type ReviewDay, type Session, type Today, type Topic, api } from '../api';
+import { type Preview, type ReviewDay, type Session, type Subject, type Today, type Topic, api } from '../api';
 import { Icon } from '../components/Icon';
 import { SessionContents, useSessionStart } from '../components/SessionPreview';
 import { usePolling, useResource } from '../hooks';
@@ -9,7 +9,10 @@ import { openReview, routeHash } from '../router';
 /** 当天的学习安排与记录；主题探索由独立首页承载。 */
 export function TodayScreen(props: { topics: Topic[] | null; onTopicsChanged: () => void; onStart: (session: Session, notice?: string) => void }) {
   const { topics, onTopicsChanged, onStart } = props;
-  const preview = useResource(() => api.preview(), []);
+  // 选中的学科：null 表示不限定，沿用原来的跨主题安排
+  const [subject, setSubject] = useState<string | null>(null);
+  const preview = useResource(() => api.preview({ subject }), [subject]);
+  const subjects = useResource(() => api.listSubjects().then((r) => r.subjects), []);
   const today = useResource(() => api.today(), []);
   const days = useResource(() => api.reviewDays().then((r) => r.days), []);
   const reloadPreview = preview.reload;
@@ -30,8 +33,9 @@ export function TodayScreen(props: { topics: Topic[] | null; onTopicsChanged: ()
         </div>
         <a className="card-link" href={routeHash({ name: 'home' })}>去首页添加新主题<Icon name="chevron" /></a>
       </div>
+      <SubjectPicker subjects={subjects.data ?? []} value={subject} onChange={setSubject} />
       {preview.error ? <p className="error-text" role="alert">没能读取下一节：{preview.error} <button className="card-link" type="button" onClick={preview.reload}>重新加载</button></p>
-        : <ActionArea preview={preview.data} hasTopics={hasTopics} topics={topics} onStart={onStart} />}
+        : <ActionArea preview={preview.data} hasTopics={hasTopics} topics={topics} subject={subject} onStart={onStart} />}
       <div className="grid top section-gap">
         <section className="panel span-8" aria-labelledby="next-title">
           {preview.error ? <><header><h2 id="next-title">这一节会学什么</h2></header><p className="muted">重新加载后查看当前安排。</p></> : <NextContents preview={preview.data} />}
@@ -47,6 +51,35 @@ export function TodayScreen(props: { topics: Topic[] | null; onTopicsChanged: ()
         </section>
       </div>
     </>
+  );
+}
+
+/**
+ * 学科选择：选一个学科后，这一节的复习、重讲、新学都只取该学科的知识点。
+ * 不选时和原来一样跨主题安排；没有打标签的主题不出现，用"全部"兜住。
+ */
+function SubjectPicker(props: { subjects: Subject[]; value: string | null; onChange: (subject: string | null) => void }) {
+  const { subjects, value, onChange } = props;
+  if (subjects.length === 0) return null;
+  return (
+    <div className="subject-picker" style={{ marginBottom: 16 }}>
+      <div className="segmented" role="group" aria-label="按学科学习">
+        <button type="button" aria-pressed={value === null} onClick={() => onChange(null)}>
+          全部学科
+        </button>
+        {subjects.map((s) => (
+          <button key={s.subject} type="button" aria-pressed={value === s.subject} onClick={() => onChange(s.subject)}>
+            {s.subject}
+            {s.edge + s.due > 0 && <span className="muted num" style={{ marginLeft: 4 }}>{s.edge + s.due}</span>}
+          </button>
+        ))}
+      </div>
+      {value !== null && (
+        <p className="muted small" style={{ marginTop: 8 }}>
+          这一节只在「{value}」内安排：复习和新学都来自这个学科。到期但不在这个学科的内容，等切回全部学科或加入别的学科后再复习。
+        </p>
+      )}
+    </div>
   );
 }
 
@@ -66,9 +99,10 @@ function ActionArea(props: {
   preview: Preview | null;
   hasTopics: boolean;
   topics: Topic[] | null;
+  subject: string | null;
   onStart: (session: Session, notice?: string) => void;
 }) {
-  const { preview, hasTopics, topics, onStart } = props;
+  const { preview, hasTopics, topics, subject, onStart } = props;
   const [composing, setComposing] = useState(false);
   const { busy, error, run } = useSessionStart(onStart);
 
@@ -83,7 +117,7 @@ function ActionArea(props: {
   if (!preview) return <div className="action-area"><span className="skeleton" style={{ display: 'inline-block', width: 160, height: 38 }} /></div>;
 
   if (composing) {
-    return <Composer open={preview.open} busy={busy === 'build'} error={error} onBuild={(guidance) => run('build', guidance)} onCancel={() => setComposing(false)} />;
+    return <Composer open={preview.open} busy={busy === 'build'} error={error} onBuild={(guidance) => run('build', guidance, subject)} onCancel={() => setComposing(false)} />;
   }
 
   const remaining = preview.open ? preview.open.items.filter((i) => !i.done).length : 0;
@@ -98,15 +132,15 @@ function ActionArea(props: {
       ) : (
         <div className="actions-row" style={{ marginTop: 0 }}>
           {preview.open ? (
-            <button type="button" className="btn primary large" onClick={() => run('start')} disabled={busy !== null}>
+            <button type="button" className="btn primary large" onClick={() => run('start', undefined, subject)} disabled={busy !== null}>
               {busy === 'start' ? '正在打开…' : `继续这一节 · 还剩 ${remaining} 项`}
             </button>
           ) : ready ? (
-            <button type="button" className="btn primary large" onClick={() => run('start')} disabled={busy !== null}>
+            <button type="button" className="btn primary large" onClick={() => run('start', undefined, subject)} disabled={busy !== null}>
               {busy === 'start' ? '正在打开…' : `开始这一节 · 约 ${preview.estMinutes} 分钟`}
             </button>
           ) : (
-            <button type="button" className="btn primary large" onClick={() => run('build')} disabled={busy !== null}>
+            <button type="button" className="btn primary large" onClick={() => run('build', undefined, subject)} disabled={busy !== null}>
               {busy === 'build' ? '正在构建，大约半分钟…' : '现在构建一节'}
             </button>
           )}

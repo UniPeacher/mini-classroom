@@ -41,11 +41,7 @@ export function HomeScreen(props: { topics: Topic[] | null; topicsError: string;
         {topicsError ? <p className="error-text" role="alert">没能读取学习主题：{topicsError} <button type="button" className="card-link" onClick={onTopicsChanged}>重新加载</button></p>
           : topics === null ? <p className="muted">正在读取学习主题…</p>
             : topics.length === 0 ? <p className="muted">添加第一个主题后，就能从这里查看摸底和学习情况。</p>
-              : <div className="home-topic-list">{topics.slice(-4).reverse().map(topic => (
-                <a key={topic.id} className="home-topic" href={routeHash({ name: 'topic', topicId: topic.id })}>
-                  <Icon name="topic" /><span className="row-main"><span className="row-title">{topic.title}</span><span className="row-sub">{topicStatus(topic)}</span></span><Icon name="chevron" />
-                </a>
-              ))}</div>}
+              : <TopicGroups topics={topics} />}
       </section>
     </div>
   );
@@ -180,4 +176,60 @@ function topicStatus(topic: Topic): string {
   if (topic.placementStatus === 'testing') return '继续完成摸底';
   if (topic.status === 'paused') return '已暂停新学，学过的内容照常复习';
   return '查看知识点与掌握情况';
+}
+
+/**
+ * 按学科标签分组的主题列表。主题会越积越多，分组后能按学科找到想学的那个；
+ * 没打标签的主题单独放在最后一组，避免被藏起来。
+ */
+function TopicGroups({ topics }: { topics: Topic[] }) {
+  const groups = new Map<string, Topic[]>();
+  for (const topic of topics) {
+    const key = topic.subject?.trim() || '';
+    const list = groups.get(key) ?? [];
+    list.push(topic);
+    groups.set(key, list);
+  }
+  // 有标签的学科按名称排；未归类的放最后
+  const ordered = [...groups.entries()].sort(([a], [b]) => {
+    if (a === b) return 0;
+    if (a === '') return 1;
+    if (b === '') return -1;
+    return a.localeCompare(b, 'zh-CN');
+  });
+  const ungroupedOnly = ordered.length === 1 && ordered[0]![0] === '';
+  if (ungroupedOnly) {
+    return <TopicRows topics={ordered[0]![1]} />;
+  }
+  return (
+    <div className="topic-groups">
+      {ordered.map(([subject, list]) => (
+        <section key={subject || '__none'} className="topic-group">
+          <h3 className="topic-group-title">
+            {subject || '未归类'}
+            <span className="muted small num">{list.length}</span>
+          </h3>
+          <TopicRows topics={list} />
+        </section>
+      ))}
+    </div>
+  );
+}
+
+/** 一组内的主题：最近添加的在前 */
+function TopicRows({ topics }: { topics: Topic[] }) {
+  return (
+    <div className="home-topic-list">
+      {[...topics].reverse().map((topic) => (
+        <a key={topic.id} className="home-topic" href={routeHash({ name: 'topic', topicId: topic.id })}>
+          <Icon name="topic" />
+          <span className="row-main">
+            <span className="row-title">{topic.title}</span>
+            <span className="row-sub">{topicStatus(topic)}</span>
+          </span>
+          <Icon name="chevron" />
+        </a>
+      ))}
+    </div>
+  );
 }

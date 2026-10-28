@@ -7,12 +7,12 @@ export function useSessionStart(onStart: (session: Session, notice?: string) => 
   const [busy, setBusy] = useState<'start' | 'build' | null>(null);
   const [error, setError] = useState('');
 
-  async function run(kind: 'start' | 'build', guidance?: string) {
+  async function run(kind: 'start' | 'build', guidance?: string, subject?: string | null) {
     if (busy) return;
     setBusy(kind);
     setError('');
     try {
-      const result = await api.nextSession({ guidance, fresh: kind === 'build' });
+      const result = await api.nextSession({ guidance, fresh: kind === 'build', subject });
       if (result.session) onStart(result.session, guidanceNotice(Boolean(guidance), result.resumed, result.guided));
       else if (result.capped) setError('今天已达到每日节数上限，可以在设置里调整。');
       else setError(result.preparing ? '内容还在后台准备，稍等一会儿再试。' : '现在没有可学的内容：所有主题都在等摸底、已暂停，或已全部学完。');

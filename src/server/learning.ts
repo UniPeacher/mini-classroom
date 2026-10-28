@@ -25,7 +25,8 @@ import { settleWithLimit } from '../jobs/concurrency';
 import { fillPool } from '../jobs/fill-pool';
 import { contextOf, generateItem, saveGeneratedItem } from '../jobs/generate-item';
 import { enqueue } from '../jobs/queue';
-import { type Settings, readState, writeState } from '../settings';
+import { type Settings, guidanceForSubject, readState, writeState } from '../settings';
+import { type SubjectStyleId, styleIdOf } from '../shared/subject-styles';
 import { type ConnectionContent, type Grade, type Question, isOpenQuestion } from '../shared/content';
 import { sameContentGuidance } from '../shared/content-guidance';
 import type { Db } from '../store/db';
@@ -80,6 +81,8 @@ export interface NextSessionOptions {
   timeZone?: string;
   /** 构建新一节：提前结束未完成的一节；候选池没有可学内容时当场生成 */
   fresh?: boolean;
+  /** 只在指定学科内组装这一节；null 或省略时不限 */
+  subject?: string | null;
 }
 
 /** 联结练习的预估时长（秒） */
@@ -103,11 +106,44 @@ export function createLearning({ db, model, settings: currentSettings, illustrat
     return db.select().from(topics).orderBy(asc(topics.createdAt)).all();
   }
 
-  /** 暂停或恢复主题、调整优先级。暂停的主题不再新学，复习照常进行。 */
-  function updateTopic(topicId: string, patch: { status?: 'active' | 'paused'; priority?: number }, now: Date) {
+  /**
+   * 学科标签汇总：每个标签下的主题数、有多少已能新学、有多少今天到期，以及选定的内容风格。
+   * 标签由用户自己填，空标签不出现；前端据此展示按学科的学习入口。
+   */
+  function listSubjects() {
+    const rows = loadPoints(db);
+    const states = loadStates(db);
+    const styles = currentSettings().subjectStyles;
+    const now = new Date();
+    const bySubject = new Map<string, { subject: string; styleId: SubjectStyleId; topicIds: Set<string>; edge: number; due: number }>();
+    for (const topic of db.select().from(topics).where(isNotNull(topics.subject)).all()) {
+      const subject = topic.subject!.trim();
+      if (!subject) continue;
+      const entry = bySubject.get(subject) ?? { subject, styleId: styleIdOf(styles, subject), topicIds: new Set<string>(), edge: 0, due: 0 };
+      entry.topicIds.add(topic.id);
+      bySubject.set(subject, entry);
+    }
+    const edgeIds = new Set(cognitiveEdge(rows, states).map((p) => p.id));
+    for (const p of rows) {
+      const subject = p.topicSubject?.trim();
+      const entry = subject ? bySubject.get(subject) : undefined;
+      if (!entry) continue;
+      if (edgeIds.has(p.id)) entry.edge += 1;
+      const card = states.get(p.id)?.card;
+      if (!p.excluded && card != null && card.due.getTime() <= now.getTime()) entry.due += 1;
+    }
+    return [...bySubject.values()]
+      .map((e) => ({ subject: e.subject, styleId: e.styleId, topicCount: e.topicIds.size, edge: e.edge, due: e.due }))
+      .sort((a, b) => a.subject.localeCompare(b.subject, 'zh-CN'));
+  }
+
+  /** 暂停或恢复主题、调整优先级、改学科标签。暂停的主题不再新学，复习照常进行。 */
+  function updateTopic(topicId: string, patch: { status?: 'active' | 'paused'; priority?: number; subject?: string | null }, now: Date) {
     const topic = getTopic(db, topicId);
     if (!topic) throw new LearningError('学习主题不存在', 404);
-    db.update(topics).set(patch).where(eq(topics.id, topicId)).run();
+    // 清空标签和从未设过标签是同一件事，统一存 null，避免出现空字符串这个独立标签
+    const next = 'subject' in patch ? { ...patch, subject: patch.subject?.trim() || null } : patch;
+    db.update(topics).set(next).where(eq(topics.id, topicId)).run();
     // 恢复的主题需要备新学内容
     if (patch.status === 'active' && topic.status === 'paused') enqueue(db, 'fill_pool', { now: now.toISOString() }, now, { dedupe: true });
     return getTopic(db, topicId)!;
@@ -137,12 +173,13 @@ export function createLearning({ db, model, settings: currentSettings, illustrat
     }
 
     const mobile = options.device === 'mobile';
+    const subject = options.subject ?? null;
     let points = loadPoints(db);
     let states = loadStates(db);
-    let picked = pickFromPool(now, points, states, mobile, settings).items;
+    let picked = pickFromPool(now, points, states, mobile, settings, subject).items;
     if (picked.length === 0 && options.fresh) {
       await fillPool({ db, model, settings: currentSettings, clock: () => now, illustrations: illustrationsOn() }, now);
-      picked = pickFromPool(now, loadPoints(db), loadStates(db), mobile, settings).items;
+      picked = pickFromPool(now, loadPoints(db), loadStates(db), mobile, settings, subject).items;
     }
     if (picked.length === 0) return { ...empty, preparing: hasPendingWork() };
 
@@ -164,6 +201,7 @@ export function createLearning({ db, model, settings: currentSettings, illustrat
     const excludedIds = new Set(points.filter((p) => p.excluded).map((p) => p.id));
     const includedIds = new Set(points.filter((p) => {
       if (p.excluded) return false;
+      if (subject !== null && p.subject !== subject) return false;
       if (stageOf(p.id) === 'unlearned') return edgeIds.has(p.id);
       if (stageOf(p.id) === 'understand') return prerequisitesSatisfied(p, stageOf, excludedIds);
       return true;
@@ -196,14 +234,15 @@ export function createLearning({ db, model, settings: currentSettings, illustrat
    * 预览下一节：不开始、不改动任何数据，只说明此刻打开会学什么、大约多久。
    * 首页据此回答"下一节准备好了吗"。
    */
-  function previewNext(now: Date, options: Pick<NextSessionOptions, 'device' | 'timeZone'> = {}) {
+  function previewNext(now: Date, options: Pick<NextSessionOptions, 'device' | 'timeZone' | 'subject'> = {}) {
     const settings = currentSettings();
     const open = findOpenSession();
     const sessionsToday = finishedToday(now, options.timeZone);
     const capped = !open && settings.dailySessionCap !== null && sessionsToday >= settings.dailySessionCap;
     const points = loadPoints(db);
     const states = loadStates(db);
-    const { items: picked, newPaused, timeFactor: factor } = pickFromPool(now, points, states, options.device === 'mobile', settings);
+    const subject = options.subject ?? null;
+    const { items: picked, newPaused, timeFactor: factor } = pickFromPool(now, points, states, options.device === 'mobile', settings, subject);
     const byId = new Map(points.map((p) => [p.id, p]));
     const purposes = picked.map((item) => purposeOf(item, states.get(item.knowledgePointId) ?? UNLEARNED));
     const count = (purpose: ItemPurpose) => purposes.filter((p) => p === purpose).length;
@@ -457,7 +496,7 @@ export function createLearning({ db, model, settings: currentSettings, illustrat
   }
 
   /** 按组装规则从候选池挑出一节（不写入数据库） */
-  function pickFromPool(now: Date, points: PointInfo[], states: Map<string, MemoryState>, mobile: boolean, settings: Settings) {
+  function pickFromPool(now: Date, points: PointInfo[], states: Map<string, MemoryState>, mobile: boolean, settings: Settings, subject: string | null = null) {
     const pool = loadPool(db);
     const factor = currentTimeFactor();
     const result = assemble({
@@ -467,7 +506,8 @@ export function createLearning({ db, model, settings: currentSettings, illustrat
       now,
       budgetSeconds: settings.budgetSeconds,
       maxNewPerSession: settings.maxNewPerSession,
-      newTopicId: chooseTopicForNew(points, states, pool, mobile),
+      newTopicId: chooseTopicForNew(points, states, pool, mobile, subject),
+      subject,
       mobile,
       timeFactor: factor,
     });
@@ -475,11 +515,12 @@ export function createLearning({ db, model, settings: currentSettings, illustrat
   }
 
   /** 这一节的新知识点来自哪个主题：在候选池里备有新学内容的主题之间，按优先级轮换 */
-  function chooseTopicForNew(points: PointInfo[], states: Map<string, MemoryState>, pool: PoolItem[], mobile: boolean): string | null {
+  function chooseTopicForNew(points: PointInfo[], states: Map<string, MemoryState>, pool: PoolItem[], mobile: boolean, subject: string | null = null): string | null {
     const ready = new Set(
       pool.filter((i) => i.kind === 'lesson' && (!mobile || isMobileForm(i.questionForm))).map((i) => i.knowledgePointId),
     );
-    const topicIds = new Set(cognitiveEdge(points, states).filter((p) => ready.has(p.id)).map((p) => p.topicId!));
+    const edge = cognitiveEdge(points, states).filter((p) => subject === null || p.subject === subject);
+    const topicIds = new Set(edge.filter((p) => ready.has(p.id)).map((p) => p.topicId!));
     if (topicIds.size === 0) return null;
     const served = db.select({ newTopicId: sessions.newTopicId }).from(sessions).where(isNotNull(sessions.newTopicId)).all();
     const rows = db.select().from(topics).where(inArray(topics.id, [...topicIds])).all();
@@ -542,18 +583,24 @@ export function createLearning({ db, model, settings: currentSettings, illustrat
     const states = loadStates(db);
     const known = loadExistingKnowledge(db).map((k) => k.text);
     const byId = new Map(points.map((p) => [p.id, p]));
+    // 每项按它所属学科取引导词：不同学科可以用不同的内容风格
+    const guidanceOf = (pointId: string) => guidanceForSubject(generationSettings, byId.get(pointId)?.topicSubject ?? null);
     const results = await settleWithLimit(
       picked.map((item) => () =>
         generateItem(
           model,
           contextOf(byId.get(item.knowledgePointId)!, byId, { guidance, state: states.get(item.knowledgePointId), existingKnowledge: known }),
           needOf(item),
-          { illustrations: illustrationsOn(), contentGuidance: generationSettings.contentGuidance },
+          { illustrations: illustrationsOn(), contentGuidance: guidanceOf(item.knowledgePointId) },
         ),
       ),
       generationSettings.generationConcurrency,
     );
-    if (!sameContentGuidance(generationSettings.contentGuidance, currentSettings().contentGuidance)) {
+    // 只要本次涉及的学科里有引导词变化就说明内容已过期；其他学科的变化不影响这一节
+    const guidanceStale = picked.some((item) =>
+      !sameContentGuidance(guidanceOf(item.knowledgePointId), guidanceForSubject(currentSettings(), byId.get(item.knowledgePointId)?.topicSubject ?? null)),
+    );
+    if (guidanceStale) {
       throw new LearningError('生成期间引导词已更新，请重新开始，新内容将按最新要求准备。', 409);
     }
     const replaced = picked.map((item, i): PoolItem => {
@@ -699,6 +746,7 @@ export function createLearning({ db, model, settings: currentSettings, illustrat
   return {
     startTopic,
     listTopics,
+    listSubjects,
     updateTopic,
     nextSession,
     previewNext,

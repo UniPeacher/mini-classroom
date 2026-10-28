@@ -3,6 +3,7 @@ import { AiOutputError, type StructuredModel } from '../ai/gateway';
 import { UNLEARNED } from '../domain/memory';
 import { planPool } from '../domain/plan-pool';
 import type { Settings } from '../settings';
+import { guidanceForSubject } from '../settings';
 import { sameContentGuidance } from '../shared/content-guidance';
 import type { Db } from '../store/db';
 import { loadExistingKnowledge, loadPoints, loadPool, loadStates } from '../store/repo';
@@ -31,7 +32,6 @@ export interface FillPoolDeps {
  */
 export async function fillPool({ db, model, settings, clock, illustrations }: FillPoolDeps, now: Date): Promise<{ generated: number; retryable: unknown }> {
   const generationSettings = settings();
-  const guidanceCurrent = () => sameContentGuidance(generationSettings.contentGuidance, settings().contentGuidance);
   const points = loadPoints(db);
   const states = loadStates(db);
   const needs = planPool({
@@ -48,9 +48,13 @@ export async function fillPool({ db, model, settings, clock, illustrations }: Fi
   const results = await settleWithLimit(
     needs.map((need) => async () => {
       const excluded = () => db.select().from(memoryStates).where(eq(memoryStates.knowledgePointId, need.knowledgePointId)).get()?.excluded;
+      // 引导词按知识点所属学科解析：学科换了风格就重来，其他学科不受影响
+      const subject = byId.get(need.knowledgePointId)?.topicSubject ?? null;
+      const guidance = guidanceForSubject(generationSettings, subject);
+      const guidanceCurrent = () => sameContentGuidance(guidance, guidanceForSubject(settings(), byId.get(need.knowledgePointId)?.topicSubject ?? null));
       if (excluded() || !guidanceCurrent()) return;
       const ctx = contextOf(byId.get(need.knowledgePointId)!, byId, { state: states.get(need.knowledgePointId) ?? UNLEARNED, existingKnowledge: known });
-      const generated = await generateItem(model, ctx, need, { illustrations, contentGuidance: generationSettings.contentGuidance });
+      const generated = await generateItem(model, ctx, need, { illustrations, contentGuidance: guidance });
       if (excluded() || !guidanceCurrent()) return;
       saveGeneratedItem(db, generated, clock());
       return true;

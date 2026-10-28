@@ -212,3 +212,80 @@ describe('速查表、导出与已有知识', () => {
     expect((await call('GET', '/api/map')).body.existingKnowledge).toEqual([]);
   });
 });
+
+describe('学科标签', () => {
+  /** 预览某一节会学什么；不传学科时是原来的跨主题安排 */
+  const preview = async (harness: Harness, subject?: string) => {
+    const suffix = subject ? `?subject=${encodeURIComponent(subject)}` : '';
+    return (await harness.call('GET', `/api/sessions/preview${suffix}`)).body;
+  };
+
+  it('可以给主题打标签、改标签，也能清空', async () => {
+    const harness = createHarness();
+    const topic = await harness.startTopic('离散时间信号');
+    expect((await harness.call('PATCH', `/api/topics/${topic}`, { subject: '数字信号处理' })).body.subject).toBe('数字信号处理');
+    expect((await harness.call('PATCH', `/api/topics/${topic}`, { subject: '信号与系统' })).body.subject).toBe('信号与系统');
+    // 空字符串与 null 都表示清空，不会留下一个空标签
+    expect((await harness.call('PATCH', `/api/topics/${topic}`, { subject: '   ' })).body.subject).toBeNull();
+    expect((await harness.call('PATCH', `/api/topics/${topic}`, { subject: null })).body.subject).toBeNull();
+    expect((await harness.call('PATCH', `/api/topics/${topic}`, { subject: 'x'.repeat(41) })).status).toBe(400);
+  });
+
+  it('汇总接口按学科给出主题数、可新学数和到期数', async () => {
+    const harness = createHarness();
+    const dsp = await harness.startTopic('离散时间信号');
+    const hyd = await harness.startTopic('阀控缸');
+    await harness.startTopic('未归类主题');
+    await harness.call('PATCH', `/api/topics/${dsp}`, { subject: '数字信号处理' });
+    await harness.call('PATCH', `/api/topics/${hyd}`, { subject: '液压传动' });
+    await harness.worker.runUntilIdle();
+
+    const { subjects } = (await harness.call('GET', '/api/subjects')).body;
+    expect(subjects.map((s: any) => s.subject)).toEqual(['数字信号处理', '液压传动']);
+    const dspSummary = subjects.find((s: any) => s.subject === '数字信号处理');
+    expect(dspSummary.topicCount).toBe(1);
+    expect(dspSummary.edge).toBeGreaterThan(0);
+    expect(dspSummary.due).toBe(0);
+  });
+
+  it('指定学科时，预览里的新知识点只来自该学科', async () => {
+    const harness = createHarness();
+    const dsp = await harness.startTopic('离散时间信号');
+    const hyd = await harness.startTopic('阀控缸');
+    await harness.call('PATCH', `/api/topics/${dsp}`, { subject: '数字信号处理' });
+    await harness.call('PATCH', `/api/topics/${hyd}`, { subject: '液压传动' });
+    await harness.worker.runUntilIdle();
+
+    const onlyDsp = await preview(harness, '数字信号处理');
+    expect(onlyDsp.items.length).toBeGreaterThan(0);
+    expect([...new Set(onlyDsp.items.map((i: any) => i.topicTitle))]).toEqual(['离散时间信号']);
+
+    const onlyHyd = await preview(harness, '液压传动');
+    expect([...new Set(onlyHyd.items.map((i: any) => i.topicTitle))]).toEqual(['阀控缸']);
+  });
+
+  it('按学科开始的一节，内容不跨到别的学科', async () => {
+    const harness = createHarness();
+    const dsp = await harness.startTopic('离散时间信号');
+    const hyd = await harness.startTopic('阀控缸');
+    await harness.call('PATCH', `/api/topics/${dsp}`, { subject: '数字信号处理' });
+    await harness.call('PATCH', `/api/topics/${hyd}`, { subject: '液压传动' });
+    await harness.worker.runUntilIdle();
+
+    const session = (await harness.call('POST', '/api/sessions/next', { subject: '数字信号处理' }, DAY1)).body.session;
+    expect(session).not.toBeNull();
+    expect([...new Set(session.items.map((i: any) => i.topicTitle))]).toEqual(['离散时间信号']);
+  });
+
+  it('学科里没有可学内容时不会用别的学科填空', async () => {
+    const harness = createHarness();
+    const dsp = await harness.startTopic('离散时间信号');
+    await harness.call('PATCH', `/api/topics/${dsp}`, { subject: '数字信号处理' });
+    await harness.worker.runUntilIdle();
+
+    const empty = await preview(harness, '不存在的学科');
+    expect(empty.items).toEqual([]);
+    const session = (await harness.call('POST', '/api/sessions/next', { subject: '不存在的学科' }, DAY1)).body.session;
+    expect(session).toBeNull();
+  });
+});

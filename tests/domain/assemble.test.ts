@@ -206,3 +206,50 @@ describe('组装规则：四阶段与多主题', () => {
     expect(assemble({ ...base, points, states, pool, maxNewPerSession: 0, timeFactor: 2 }).items).toHaveLength(5);
   });
 });
+
+/** 学科标签：给知识点打标，用于按学科限定一节课的范围 */
+describe('组装规则：按学科学习', () => {
+  const tagged = (id: string, position: number, subject: string | null): GraphPoint => ({ ...point(id, position), subject });
+
+  it('指定学科时，到期的复习只排该学科的知识点', () => {
+    const points = [tagged('dsp-a', 1, '数字信号处理'), tagged('hyd-a', 2, '液压传动')];
+    const states = new Map([
+      ['dsp-a', recall(3)],
+      ['hyd-a', recall(5)],
+    ]);
+    const pool = [review('dsp-a'), review('hyd-a')];
+    expect(ids(assemble({ ...base, points, states, pool }).items)).toEqual(['r-hyd-a-short_answer', 'r-dsp-a-short_answer']);
+    expect(ids(assemble({ ...base, points, states, pool, subject: '数字信号处理' }).items)).toEqual(['r-dsp-a-short_answer']);
+  });
+
+  it('指定学科时，新知识点只取该学科认知边缘上的', () => {
+    const points = [tagged('dsp-a', 1, '数字信号处理'), tagged('hyd-a', 2, '液压传动')];
+    const pool = [lesson('dsp-a'), lesson('hyd-a')];
+    const items = assemble({ ...base, points, states: new Map(), pool, subject: '数字信号处理' }).items;
+    expect(items.map((i) => i.knowledgePointId)).toEqual(['dsp-a']);
+  });
+
+  it('不指定学科时和原来一样，跨学科一起安排', () => {
+    const points = [tagged('dsp-a', 1, '数字信号处理'), tagged('hyd-a', 2, '液压传动')];
+    const pool = [lesson('dsp-a'), lesson('hyd-a')];
+    const items = assemble({ ...base, points, states: new Map(), pool }).items;
+    expect(items).toHaveLength(2);
+  });
+
+  it('学科内没有到期内容时不拿别的学科来凑', () => {
+    const points = [tagged('dsp-a', 1, '数字信号处理'), tagged('hyd-a', 2, '液压传动')];
+    const states = new Map([['hyd-a', recall(5)]]);
+    const pool = [review('hyd-a')];
+    expect(assemble({ ...base, points, states, pool, subject: '数字信号处理' }).items).toEqual([]);
+  });
+
+  it('未打标签的知识点不匹配任何学科', () => {
+    const points = [tagged('plain', 1, null), tagged('dsp-a', 2, '数字信号处理')];
+    const states = new Map([
+      ['plain', recall(5)],
+      ['dsp-a', recall(1)],
+    ]);
+    const pool = [review('plain'), review('dsp-a')];
+    expect(ids(assemble({ ...base, points, states, pool, subject: '数字信号处理' }).items)).toEqual(['r-dsp-a-short_answer']);
+  });
+});

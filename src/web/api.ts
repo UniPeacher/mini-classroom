@@ -15,6 +15,7 @@ type Asking = Services['asking'];
 type TopicPlanning = Services['topicPlanning'];
 
 export type Topic = Jsonify<ReturnType<Learning['listTopics']>[number]>;
+export type Subject = Jsonify<ReturnType<Learning['listSubjects']>[number]>;
 export type TopicDraft = Jsonify<ReturnType<TopicPlanning['get']>>;
 export type TopicDraftSummary = Jsonify<ReturnType<TopicPlanning['list']>[number]>;
 export type Preview = Jsonify<ReturnType<Learning['previewNext']>>;
@@ -38,6 +39,7 @@ export type Cheatsheet = Jsonify<ReturnType<Knowledge['getCheatsheet']>>;
 export type PlacementState = Jsonify<ReturnType<PlacementService['status']>>;
 export type SettingsView = Jsonify<ReturnType<Preferences['getSettings']>>;
 export type UserSettings = SettingsView['settings'];
+export type SubjectStyleOption = SettingsView['subjectStyles'][number];
 export type Today = Jsonify<ReturnType<Preferences['today']>>;
 export type AiSettingsView = Jsonify<ReturnType<Preferences['getAiSettings']>>;
 export type AiTestResult = Awaited<ReturnType<Preferences['testAi']>>;
@@ -100,6 +102,7 @@ export const api = {
   health: () => request<{ ok: boolean; devMode: boolean }>('GET', '/api/health'),
 
   listTopics: () => request<{ topics: Topic[] }>('GET', '/api/topics'),
+  listSubjects: () => request<{ subjects: Subject[] }>('GET', '/api/subjects'),
   topicDrafts: () => request<{ drafts: TopicDraftSummary[] }>('GET', '/api/topic-drafts'),
   createTopicDraft: (idea: string) => request<TopicDraft>('POST', '/api/topic-drafts', { idea }),
   topicDraft: (id: string) => request<TopicDraft>('GET', `/api/topic-drafts/${id}`),
@@ -107,7 +110,7 @@ export const api = {
     request<TopicDraft>('POST', `/api/topic-drafts/${id}/messages`, { message, revision }),
   replyTopicDraft: (id: string, revision: number) => request<TopicDraft>('POST', `/api/topic-drafts/${id}/reply`, { revision }),
   confirmTopicDraft: (id: string, revision: number) => request<{ topicId: string }>('POST', `/api/topic-drafts/${id}/confirm`, { revision }),
-  updateTopic: (topicId: string, patch: { status?: 'active' | 'paused'; priority?: number }) =>
+  updateTopic: (topicId: string, patch: { status?: 'active' | 'paused'; priority?: number; subject?: string | null }) =>
     request<Topic>('PATCH', `/api/topics/${topicId}`, patch),
 
   placement: (topicId: string) => request<PlacementState>('GET', `/api/topics/${topicId}/placement`),
@@ -117,10 +120,17 @@ export const api = {
     request<PlacementState>('POST', `/api/topics/${topicId}/placement/answer`, { pointId, choice }),
   skipPlacement: (topicId: string) => request<PlacementState>('POST', `/api/topics/${topicId}/placement/skip`),
 
-  preview: () => request<Preview>('GET', `/api/sessions/preview?${query({ device: currentDevice(), timeZone })}`),
+  /** preview 传 subject 时只预览该学科范围内的内容 */
+  preview: (options: { subject?: string | null } = {}) =>
+    request<Preview>('GET', `/api/sessions/preview?${query({ device: currentDevice(), timeZone, subject: options.subject ?? undefined })}`),
   /** 开始下一节；fresh 为构建新一节（提前结束未完成的一节，没备好内容时当场生成） */
-  nextSession: (options: { guidance?: string; fresh?: boolean } = {}) =>
-    request<NextSession>('POST', '/api/sessions/next', { ...options, device: currentDevice(), timeZone }),
+  nextSession: (options: { guidance?: string; fresh?: boolean; subject?: string | null } = {}) =>
+    request<NextSession>('POST', '/api/sessions/next', {
+      ...options,
+      subject: options.subject ?? undefined,
+      device: currentDevice(),
+      timeZone,
+    }),
   submitAttempt: (body: { sessionId: string; itemId: string; answer: Answer; durationMs: number }) =>
     request<AttemptResult>('POST', '/api/attempts', body),
   rate: (attemptId: string, selfRating: 'hard' | 'good' | 'easy') =>

@@ -10,9 +10,9 @@ import { existingKnowledge, items, knowledgePoints, memoryStates, relations, top
 
 // ---------- 学习主题与知识图谱 ----------
 
-export function createTopic(db: Executor, title: string, now: Date, learningBrief?: TopicBrief): string {
+export function createTopic(db: Executor, title: string, now: Date, learningBrief?: TopicBrief, subject?: string | null): string {
   const id = randomUUID();
-  db.insert(topics).values({ id, title, learningBrief, createdAt: now }).run();
+  db.insert(topics).values({ id, title, learningBrief, subject: subject ?? null, createdAt: now }).run();
   return id;
 }
 
@@ -70,6 +70,8 @@ export interface PointInfo extends GraphPoint {
   topicId: string;
   excluded: boolean;
   topicTitle: string;
+  /** 所属主题的学科标签；未归类时为 null */
+  topicSubject: string | null;
   learningBrief?: TopicBrief | null;
   title: string;
   summary: string;
@@ -99,6 +101,8 @@ export function loadPoints(db: Executor): PointInfo[] {
     position: point.position,
     topicId: point.topicId,
     topicTitle: topic.title,
+    topicSubject: topic.subject ?? null,
+    subject: topic.subject ?? null,
     learningBrief: topic.learningBrief,
     learnable: topic.status === 'active' && (topic.placementStatus === 'done' || topic.placementStatus === 'skipped'),
     decomposed: point.origin === 'decomposed',

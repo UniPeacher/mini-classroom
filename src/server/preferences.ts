@@ -4,10 +4,11 @@ import { illustratorFromConfig, modelFromConfig } from '../ai/gateway';
 import { type AiSettingsPatch, mergeAiSettings, publicAiSettings, readAiSettings, writeAiSettings } from '../ai-settings';
 import { CORE_FORMS, EXPLAIN_FORMS, FORM_INFO, QUESTION_FORMS, STAGE_QUESTION_FORMS } from '../domain/forms';
 import { enqueue } from '../jobs/queue';
-import { type UserSettings, readUserSettings, writeUserSettings } from '../settings';
+import { type UserSettings, guidanceForSubject, readUserSettings, toSettings, writeUserSettings } from '../settings';
 import { DEFAULT_CONTENT_GUIDANCE, GUIDANCE_MAX_LENGTH, resolveContentGuidance, sameContentGuidance } from '../shared/content-guidance';
+import { SUBJECT_STYLE_INFO, SUBJECT_STYLES } from '../shared/subject-styles';
 import type { Db } from '../store/db';
-import { items, sessions } from '../store/schema';
+import { items, knowledgePoints, sessions, topics } from '../store/schema';
 import { dayFormatter, timeFormatter } from './views';
 
 export interface PreferencesDeps {
@@ -28,6 +29,12 @@ export function createPreferences({ db, env = process.env }: PreferencesDeps) {
       settings: readUserSettings(db, env),
       guidanceDefaults: DEFAULT_CONTENT_GUIDANCE,
       guidanceMaxLength: GUIDANCE_MAX_LENGTH,
+      // 学科内容风格预设：界面据此列出可选风格及其说明
+      subjectStyles: SUBJECT_STYLES.map((id) => ({
+        id,
+        label: SUBJECT_STYLE_INFO[id].label,
+        description: SUBJECT_STYLE_INFO[id].description,
+      })),
       forms: {
         explain: EXPLAIN_FORMS.map((f) => ({ id: f, label: FORM_INFO[f].label, mobile: FORM_INFO[f].mobile })),
         question: QUESTION_FORMS.map((f) => ({
@@ -43,13 +50,34 @@ export function createPreferences({ db, env = process.env }: PreferencesDeps) {
     };
   }
 
-  /** 保存设置；引导词变化时只作废尚未开始的内容，再按新要求准备。 */
+  /**
+   * 保存设置；引导词变化时只作废尚未开始的内容，再按新要求准备。
+   * 只作废内容真正受影响的知识点：改了某个学科的风格，不影响其他学科已备好的内容。
+   */
   function updateSettings(patch: Partial<UserSettings>, now: Date) {
     return db.transaction((tx) => {
-      const before = resolveContentGuidance(readUserSettings(tx, env));
+      const beforeSettings = toSettings(readUserSettings(tx, env), env);
       const saved = writeUserSettings(tx, patch, now, env);
-      if (!sameContentGuidance(before, resolveContentGuidance(saved))) {
-        tx.update(items).set({ status: 'void' }).where(and(eq(items.status, 'pooled'), inArray(items.kind, ['lesson', 'review']))).run();
+      const afterSettings = toSettings(saved, env);
+      if (!sameContentGuidance(beforeSettings.contentGuidance, afterSettings.contentGuidance) || patch.subjectStyles !== undefined) {
+        // 找出引导词确实变了的学科；全局引导词变化时所有学科都算变了
+        const globalChanged = !sameContentGuidance(beforeSettings.contentGuidance, afterSettings.contentGuidance);
+        const rowOf = tx
+          .select({ pointId: knowledgePoints.id, subject: topics.subject })
+          .from(knowledgePoints)
+          .innerJoin(topics, eq(knowledgePoints.topicId, topics.id))
+          .all();
+        const stale = rowOf
+          .filter(({ subject }) =>
+            globalChanged || !sameContentGuidance(guidanceForSubject(beforeSettings, subject), guidanceForSubject(afterSettings, subject)),
+          )
+          .map((row) => row.pointId);
+        if (stale.length > 0) {
+          tx.update(items)
+            .set({ status: 'void' })
+            .where(and(eq(items.status, 'pooled'), inArray(items.kind, ['lesson', 'review']), inArray(items.knowledgePointId, stale)))
+            .run();
+        }
       }
       enqueue(tx, 'fill_pool', { now: now.toISOString() }, now, { dedupe: true });
       return saved;

@@ -5,10 +5,12 @@ import { notificationPermission, requestNotificationPermission, showReminder } f
 import { Section } from '../components/SettingsSection';
 import { type PersonalizationTab, navigate } from '../router';
 import { ContentGuidanceSettings } from './ContentGuidanceSettings';
+import { SubjectStyleSettings } from './SubjectStyleSettings';
 
 /** 学习偏好和提示词分开展示，切换标签时保留正在编辑的内容。 */
 export function PersonalizationScreen({ tab }: { tab: PersonalizationTab }) {
   const resource = useResource(() => api.settings(), []);
+  const subjects = useResource(() => api.listSubjects().then((r) => r.subjects), []);
   const [settings, setSettings] = useState<UserSettings | null>(null);
   const [stamp, setStamp] = useState('');
   const [error, setError] = useState('');
@@ -79,6 +81,18 @@ export function PersonalizationScreen({ tab }: { tab: PersonalizationTab }) {
             <Revisit settings={settings} save={save} />
           </div>
           <div role="tabpanel" id="personalization-panel-prompts" aria-labelledby="personalization-tab-prompts" hidden={tab !== 'prompts'}>
+            <SubjectStyleSettings
+              settings={settings}
+              options={resource.data.subjectStyles}
+              subjects={subjects.data ?? []}
+              maxLength={resource.data.guidanceMaxLength}
+              onSaved={(saved) => {
+                setSettings((current) => current && { ...current, subjectStyles: saved.subjectStyles });
+                void subjects.reload();
+                setError('');
+                setStamp('学科风格已保存');
+              }}
+            />
             <ContentGuidanceSettings
               settings={settings}
               defaults={resource.data.guidanceDefaults}

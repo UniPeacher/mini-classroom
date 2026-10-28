@@ -9,6 +9,8 @@ export const topics = sqliteTable('topics', {
   id: text('id').primaryKey(),
   title: text('title').notNull(),
   learningBrief: text('learning_brief', { mode: 'json' }).$type<TopicBrief>(),
+  // 用户自己填的学科标签，用来按学科组织主题、限定一节的学习范围；空表示未归类
+  subject: text('subject'),
   // 暂停的主题不再新学，复习照常进行
   status: text('status', { enum: ['active', 'paused'] }).notNull().default('active'),
   // 新学按优先级轮换：1 低、2 中、3 高

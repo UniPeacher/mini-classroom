@@ -23,6 +23,8 @@ export interface AssembleInput {
   maxNewPerSession: number;
   /** 这一节的新知识点来自哪个主题；不传时不限主题 */
   newTopicId?: string | null;
+  /** 只在指定学科内组装：复习、抽查、推进、新学都只取该标签下的知识点。不传或为 null 时不限 */
+  subject?: string | null;
   /** 在手机上打开：只挑适合手机的形式 */
   mobile?: boolean;
   /** 时长校准系数：预估时长 × 系数 ≈ 实际用时。缺省为 1 */
@@ -51,9 +53,11 @@ const DEFAULT_REVIEW_SECONDS = 60;
  * 5. 几类内容穿插排列；同一知识点优先选与上次不同的形式；手机上只选适合手机的形式。
  */
 export function assemble(input: AssembleInput): AssembleResult {
-  const { points, states, pool, now, budgetSeconds, maxNewPerSession, newTopicId, mobile = false, timeFactor = 1 } = input;
+  const { points, states, pool, now, budgetSeconds, maxNewPerSession, newTopicId, subject = null, mobile = false, timeFactor = 1 } = input;
   const stateOf = (id: string) => states.get(id) ?? UNLEARNED;
-  const included = points.filter((p) => !p.excluded);
+  // 指定学科时，四类内容都只从该学科的知识点里挑；不指定时和原来一样跨主题
+  const inScope = (p: GraphPoint) => subject === null || p.subject === subject;
+  const included = points.filter((p) => !p.excluded && inScope(p));
   const excludedIds = new Set(points.filter((p) => p.excluded).map((p) => p.id));
   const byPosition = new Map(points.map((p) => [p.id, p.position]));
   const usable = pool.filter((item) => !mobile || isMobileForm(item.questionForm));
@@ -100,6 +104,7 @@ export function assemble(input: AssembleInput): AssembleResult {
   const news = newPaused
     ? []
     : cognitiveEdge(points, states)
+        .filter((p) => inScope(p))
         .filter((p) => newTopicId === undefined || newTopicId === null || p.topicId === newTopicId)
         .map((p) => pick(p.id, 'lesson', null))
         .filter((item): item is PoolItem => item !== undefined)
