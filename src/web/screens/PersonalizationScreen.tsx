@@ -84,13 +84,12 @@ export function PersonalizationScreen({ tab }: { tab: PersonalizationTab }) {
             <SubjectStyleSettings
               settings={settings}
               options={resource.data.subjectStyles}
-              subjects={subjects.data ?? []}
-              maxLength={resource.data.guidanceMaxLength}
+              tags={subjects.data ?? []}
               onSaved={(saved) => {
-                setSettings((current) => current && { ...current, subjectStyles: saved.subjectStyles });
+                setSettings((current) => current && { ...current, subjectGroups: saved.subjectGroups });
                 void subjects.reload();
                 setError('');
-                setStamp('学科风格已保存');
+                setStamp('学科分组已保存');
               }}
             />
             <ContentGuidanceSettings

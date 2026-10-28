@@ -239,14 +239,14 @@ describe('学科内容风格', () => {
 
   it('非法预设名被拒绝', async () => {
     const h = createHarness();
-    expect((await h.call('PUT', '/api/settings', { subjectStyles: { 西语: 'quantum' } })).status).toBe(400);
-    expect((await h.call('PUT', '/api/settings', { subjectStyles: { 西语: 'language' } })).status).toBe(200);
+    expect((await h.call('PUT', '/api/settings', { subjectGroups: [{ name: '语言', styleId: 'quantum', subjects: ['西语'] }] })).status).toBe(400);
+    expect((await h.call('PUT', '/api/settings', { subjectGroups: [{ name: '语言', styleId: 'language', subjects: ['西语'] }] })).status).toBe(200);
   });
 
   it('学科汇总里带上当前选定的风格', async () => {
     const h = createHarness();
     await twoSubjects(h);
-    await h.call('PUT', '/api/settings', { subjectStyles: { 西班牙语: 'language' } });
+    await h.call('PUT', '/api/settings', { subjectGroups: [{ name: '语言', styleId: 'language', subjects: ['西班牙语'] }] });
     const { subjects } = (await h.call('GET', '/api/subjects')).body;
     expect(subjects.find((s: any) => s.subject === '西班牙语').styleId).toBe('language');
     expect(subjects.find((s: any) => s.subject === '数字信号处理').styleId).toBe('default');
@@ -269,7 +269,7 @@ describe('学科内容风格', () => {
     expect(languageItems.length).toBeGreaterThan(0);
     expect(others.length).toBeGreaterThan(0);
 
-    await h.call('PUT', '/api/settings', { subjectStyles: { 西班牙语: 'language' } });
+    await h.call('PUT', '/api/settings', { subjectGroups: [{ name: '语言', styleId: 'language', subjects: ['西班牙语'] }] });
 
     const after = loadPool(h.db);
     // 语言学科的内容被作废，其他学科的内容保持可用
@@ -285,18 +285,18 @@ describe('学科内容风格', () => {
   it('改成同一个风格不会让内容失效', async () => {
     const h = createHarness();
     await twoSubjects(h);
-    await h.call('PUT', '/api/settings', { subjectStyles: { 西班牙语: 'language' } });
+    await h.call('PUT', '/api/settings', { subjectGroups: [{ name: '语言', styleId: 'language', subjects: ['西班牙语'] }] });
     await h.worker.runUntilIdle();
     const before = loadPool(h.db);
     expect(before.length).toBeGreaterThan(0);
-    await h.call('PUT', '/api/settings', { subjectStyles: { 西班牙语: 'language' } });
+    await h.call('PUT', '/api/settings', { subjectGroups: [{ name: '语言', styleId: 'language', subjects: ['西班牙语'] }] });
     expect(loadPool(h.db)).toEqual(before);
   });
 
   it('生成内容时按学科使用对应的风格提示词', async () => {
     const h = createHarness();
     await twoSubjects(h);
-    await h.call('PUT', '/api/settings', { subjectStyles: { 西班牙语: 'language', 数字信号处理: 'stem' } });
+    await h.call('PUT', '/api/settings', { subjectGroups: [{ name: '语言', styleId: 'language', subjects: ['西班牙语'] }, { name: '理工科', styleId: 'stem', subjects: ['数字信号处理'] }] });
     h.requests.length = 0;
     await h.worker.runUntilIdle();
 
@@ -307,5 +307,70 @@ describe('学科内容风格', () => {
     expect(systems.some((s) => s.includes('理工科'))).toBe(true);
     // 每个请求都保留通用写作原则：预设只追加不替换
     for (const s of systems) expect(s).toContain('写作原则');
+  });
+});
+
+describe('学科分组：大类定风格，下面挂多门课', () => {
+  it('同一分组下的多门课共用一套风格；换分组后随之改变', async () => {
+    const h = createHarness();
+    const dsp = await h.startTopic('离散时间信号');
+    const hyd = await h.startTopic('阀控缸');
+    const esp = await h.startTopic('西班牙语动词变位');
+    for (const [id, subject] of [[dsp, '数字信号处理'], [hyd, '液压传动'], [esp, '西班牙语']] as const) {
+      await h.call('PATCH', `/api/topics/${id}`, { subject });
+    }
+
+    // 理工科大组选 stem，把两门专业课都挂进去
+    const saved = (await h.call('PUT', '/api/settings', {
+      subjectGroups: [
+        { name: '理工科', styleId: 'stem', subjects: ['数字信号处理', '液压传动'] },
+        { name: '语言', styleId: 'language', subjects: ['西班牙语'] },
+      ],
+    })).body;
+    expect(saved.subjectGroups.find((g: any) => g.name === '理工科').subjects).toEqual(['数字信号处理', '液压传动']);
+
+    // 学科汇总带出所属分组
+    const { subjects } = (await h.call('GET', '/api/subjects')).body;
+    expect(subjects.find((s: any) => s.subject === '数字信号处理').group).toBe('理工科');
+    expect(subjects.find((s: any) => s.subject === '液压传动').group).toBe('理工科');
+    expect(subjects.find((s: any) => s.subject === '西班牙语').group).toBe('语言');
+    // 同组的风格一致
+    expect(subjects.find((s: any) => s.subject === '数字信号处理').styleId).toBe('stem');
+    expect(subjects.find((s: any) => s.subject === '液压传动').styleId).toBe('stem');
+  });
+
+  it('把标签从一个分组挪到另一个分组，风格跟着变，并只作废这些课的内容', async () => {
+    const h = createHarness();
+    const dsp = await h.startTopic('离散时间信号');
+    const esp = await h.startTopic('西班牙语动词变位');
+    await h.call('PATCH', `/api/topics/${dsp}`, { subject: '数字信号处理' });
+    await h.call('PATCH', `/api/topics/${esp}`, { subject: '西班牙语' });
+    await h.call('PUT', '/api/settings', {
+      subjectGroups: [
+        { name: '理工科', styleId: 'stem', subjects: ['数字信号处理'] },
+        { name: '语言', styleId: 'language', subjects: ['西班牙语'] },
+      ],
+    });
+    await h.worker.runUntilIdle();
+    const before = loadPool(h.db);
+    expect(before.length).toBeGreaterThan(0);
+
+    // 把西语从"语言"挪到"理工科"
+    await h.call('PUT', '/api/settings', {
+      subjectGroups: [
+        { name: '理工科', styleId: 'stem', subjects: ['数字信号处理', '西班牙语'] },
+        { name: '语言', styleId: 'language', subjects: [] },
+      ],
+    });
+    const { subjects } = (await h.call('GET', '/api/subjects')).body;
+    expect(subjects.find((s: any) => s.subject === '西班牙语').group).toBe('理工科');
+    expect(subjects.find((s: any) => s.subject === '西班牙语').styleId).toBe('stem');
+    // 西语从 language 变成 stem，内容需要重新准备
+    expect(loadPool(h.db).length).toBeLessThan(before.length);
+  });
+
+  it('分组名为空或重名时被拒绝', async () => {
+    const h = createHarness();
+    expect((await h.call('PUT', '/api/settings', { subjectGroups: [{ name: '  ', styleId: 'stem', subjects: [] }] })).status).toBe(400);
   });
 });

@@ -183,35 +183,65 @@ function topicStatus(topic: Topic): string {
  * 没打标签的主题单独放在最后一组，避免被藏起来。
  */
 function TopicGroups({ topics }: { topics: Topic[] }) {
-  const groups = new Map<string, Topic[]>();
+  // 分组来自设置；没配置分组时退回按标签平铺
+  const subjects = useResource(() => api.listSubjects().then((r) => r.subjects), []);
+  const groupOf = new Map((subjects.data ?? []).map((s) => [s.subject, s.group]));
+  const tags = new Map<string, Topic[]>();
   for (const topic of topics) {
     const key = topic.subject?.trim() || '';
-    const list = groups.get(key) ?? [];
+    const list = tags.get(key) ?? [];
     list.push(topic);
-    groups.set(key, list);
+    tags.set(key, list);
   }
-  // 有标签的学科按名称排；未归类的放最后
-  const ordered = [...groups.entries()].sort(([a], [b]) => {
-    if (a === b) return 0;
-    if (a === '') return 1;
-    if (b === '') return -1;
-    return a.localeCompare(b, 'zh-CN');
-  });
-  const ungroupedOnly = ordered.length === 1 && ordered[0]![0] === '';
-  if (ungroupedOnly) {
-    return <TopicRows topics={ordered[0]![1]} />;
+  const ungroupedOnly = tags.size === 1 && tags.has('');
+  if (ungroupedOnly) return <TopicRows topics={tags.get('')!} />;
+
+  // 按分组归拢：一个分组下可能挂多个标签（多门课）
+  const byGroup = new Map<string, { tags: [string, Topic[]][]; count: number }>();
+  const loose: [string, Topic[]][] = [];
+  for (const entry of tags.entries()) {
+    const [tag, list] = entry;
+    const group = tag ? groupOf.get(tag) : null;
+    if (!group) { loose.push(entry); continue; }
+    const bucket = byGroup.get(group) ?? { tags: [], count: 0 };
+    bucket.tags.push(entry);
+    bucket.count += list.length;
+    byGroup.set(group, bucket);
   }
+
   return (
     <div className="topic-groups">
-      {ordered.map(([subject, list]) => (
-        <section key={subject || '__none'} className="topic-group">
-          <h3 className="topic-group-title">
-            {subject || '未归类'}
-            <span className="muted small num">{list.length}</span>
-          </h3>
-          <TopicRows topics={list} />
+      {[...byGroup.entries()]
+        .sort(([a], [b]) => a.localeCompare(b, 'zh-CN'))
+        .map(([group, bucket]) => (
+          <section key={group} className="topic-group">
+            <h3 className="topic-group-title">
+              {group}
+              <span className="muted small num">{bucket.count}</span>
+            </h3>
+            {bucket.tags
+              .sort(([a], [b]) => a.localeCompare(b, 'zh-CN'))
+              .map(([tag, list]) => (
+                <div key={tag} className="topic-subgroup">
+                  <h4 className="topic-subgroup-title">{tag}</h4>
+                  <TopicRows topics={list} />
+                </div>
+              ))}
+          </section>
+        ))}
+      {loose.length > 0 && (
+        <section className="topic-group">
+          <h3 className="topic-group-title">未分组</h3>
+          {loose
+            .sort(([a], [b]) => (a === '' ? 1 : b === '' ? -1 : a.localeCompare(b, 'zh-CN')))
+            .map(([tag, list]) => (
+              <div key={tag || '__none'} className="topic-subgroup">
+                <h4 className="topic-subgroup-title">{tag || '未分类'}</h4>
+                <TopicRows topics={list} />
+              </div>
+            ))}
         </section>
-      ))}
+      )}
     </div>
   );
 }

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { appendStyle, isSubjectStyleId, styleIdOf, SUBJECT_STYLE_INFO, SUBJECT_STYLES } from '../../src/shared/subject-styles';
+import { appendStyle, assignTag, groupOfTag, isSubjectStyleId, normalizeGroups, styleIdOfTag, SUBJECT_STYLE_INFO, SUBJECT_STYLES } from '../../src/shared/subject-styles';
 
 /** 学科预设只追加，不替换通用写作原则；未设置时行为与改动前一致 */
 describe('学科内容风格预设', () => {
@@ -24,20 +24,66 @@ describe('学科内容风格预设', () => {
     }
   });
 
-  it('未设置学科的样式时按通用处理', () => {
-    expect(styleIdOf({}, '西语')).toBe('default');
-    expect(styleIdOf(undefined, '西语')).toBe('default');
-    expect(styleIdOf({}, null)).toBe('default');
-    expect(styleIdOf({}, undefined)).toBe('default');
+  it('未分组、未设置样式时按通用处理', () => {
+    expect(styleIdOfTag({ groups: [] }, '西语')).toBe('default');
+    expect(styleIdOfTag(undefined, '西语')).toBe('default');
+    expect(styleIdOfTag({ groups: [] }, null)).toBe('default');
+    expect(styleIdOfTag({ groups: [] }, undefined)).toBe('default');
   });
 
-  it('读取已设置的样式；值非法时退回通用', () => {
-    expect(styleIdOf({ 西语: 'language' }, '西语')).toBe('language');
-    expect(styleIdOf({ 西语: 'not-a-style' }, '西语')).toBe('default');
+  it('标签跟随所属分组的风格', () => {
+    const groups = [{ name: '理工科', styleId: 'stem' as const, subjects: ['液压传动', '数字信号处理'] }];
+    expect(styleIdOfTag({ groups }, '液压传动')).toBe('stem');
+    expect(styleIdOfTag({ groups }, '数字信号处理')).toBe('stem');
+    // 不在任何分组里的标签按通用处理
+    expect(styleIdOfTag({ groups }, '西语')).toBe('default');
   });
 
-  it('没有学科标签时不套用任何学科的预设', () => {
-    expect(styleIdOf({ 西语: 'language' }, null)).toBe('default');
+  it('分组风格非法时退回通用', () => {
+    const groups = [{ name: '理工科', styleId: 'not-a-style' as unknown as 'stem', subjects: ['液压传动'] }];
+    expect(styleIdOfTag({ groups }, '液压传动')).toBe('default');
+  });
+
+  it('兼容旧版扁平映射：没有分组时仍按旧配置生效', () => {
+    expect(styleIdOfTag({ groups: [], legacyStyles: { 西语: 'language' } }, '西语')).toBe('language');
+    // 分组优先于旧配置
+    const groups = [{ name: '语言', styleId: 'humanities' as const, subjects: ['西语'] }];
+    expect(styleIdOfTag({ groups, legacyStyles: { 西语: 'language' } }, '西语')).toBe('humanities');
+  });
+
+  it('一个标签只能属于一个分组', () => {
+    const groups = [
+      { name: '甲', styleId: 'stem' as const, subjects: ['x'] },
+      { name: '乙', styleId: 'language' as const, subjects: [] },
+    ];
+    const moved = assignTag(groups, 'x', '乙');
+    expect(moved.find((g) => g.name === '甲')!.subjects).toEqual([]);
+    expect(moved.find((g) => g.name === '乙')!.subjects).toEqual(['x']);
+    // 传 null 表示从分组里移除
+    expect(assignTag(moved, 'x', null).every((g) => !g.subjects.includes('x'))).toBe(true);
+  });
+
+  it('能查到标签所在的分组', () => {
+    const groups = [{ name: '理工科', styleId: 'stem' as const, subjects: ['液压传动'] }];
+    expect(groupOfTag(groups, '液压传动')?.name).toBe('理工科');
+    expect(groupOfTag(groups, '西语')).toBeNull();
+    expect(groupOfTag(groups, null)).toBeNull();
+  });
+
+  it('清理分组：去掉空标签、重复标签和同名分组', () => {
+    const cleaned = normalizeGroups([
+      { name: ' 理工科 ', styleId: 'stem', subjects: ['液压传动', ' 液压传动 ', '', '  '] },
+      { name: '理工科', styleId: 'language', subjects: ['重复名'] },
+      { name: '  ', styleId: 'stem', subjects: ['空名'] },
+    ]);
+    expect(cleaned).toHaveLength(1);
+    expect(cleaned[0]!.name).toBe('理工科');
+    expect(cleaned[0]!.subjects).toEqual(['液压传动']);
+  });
+
+  it('没有学科标签时不套用任何分组的预设', () => {
+    const groups = [{ name: '语言', styleId: 'language' as const, subjects: ['西语'] }];
+    expect(styleIdOfTag({ groups }, null)).toBe('default');
   });
 
   it('追加风格时保留全部通用原则，只在其后接上学科要求', () => {

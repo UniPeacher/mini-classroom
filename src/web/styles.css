@@ -564,3 +564,19 @@ pre, code { font-family: var(--font-code); }
 .subject-style-head { display: flex; align-items: center; gap: 10px; }
 .subject-style-options { display: flex; flex-wrap: wrap; gap: 6px; }
 .subject-style-row .hint { margin: 0; }
+/* 分组下再按学科标签分小节 */
+.topic-subgroup { margin-top: 10px; }
+.topic-subgroup-title { font-size: 13px; font-weight: 500; color: var(--muted); margin-bottom: 2px; }
+.topic-subgroup .home-topic-list { gap: 4px 24px; }
+/* 学科分组配置 */
+.subject-group-list { display: grid; gap: 20px; margin-bottom: 8px; }
+.subject-group { display: grid; gap: 8px; padding: 14px 0; border-bottom: 1px solid var(--rule); }
+.subject-group:last-child { border-bottom: 0; }
+.subject-group-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.subject-group-name { font-size: 15px; font-weight: 600; }
+.subject-group-styles { display: flex; flex-wrap: wrap; gap: 6px; }
+.subject-group-tags { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.subject-group-add { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.subject-group .hint { margin: 0; }
+.pill-remove { margin-left: 4px; border: 0; background: none; color: inherit; cursor: pointer; font-size: 14px; line-height: 1; padding: 0 2px; opacity: .7; }
+.pill-remove:hover { opacity: 1; }

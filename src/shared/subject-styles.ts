@@ -163,11 +163,65 @@ export const SUBJECT_STYLE_INFO: Record<SubjectStyleId, SubjectStyle> = {
 
 export const DEFAULT_SUBJECT_STYLE: SubjectStyleId = 'default';
 
-/** 用户为学科选的风格；未设置或值非法时按通用处理。 */
-export function styleIdOf(styles: Record<string, string> | undefined | null, subject: string | null | undefined): SubjectStyleId {
-  if (!subject) return DEFAULT_SUBJECT_STYLE;
-  const id = styles?.[subject];
-  return isSubjectStyleId(id) ? id : DEFAULT_SUBJECT_STYLE;
+/**
+ * 学科分组：一个大类定内容风格，下面挂具体的专业课标签。
+ * 例如「理工科」这个分组选 stem 风格，其下挂「液压传动」「数字信号处理」两个标签。
+ */
+export interface SubjectGroup {
+  /** 分组名，用户自己起，例如「理工科」「语言」 */
+  name: string;
+  styleId: SubjectStyleId;
+  /** 这个分组下的标签；标签本身不单独定风格，跟随分组 */
+  subjects: string[];
+}
+
+/**
+ * 为用户保存的分组配置。兼容早期只有 subjectStyles 扁平映射的数据：
+ * 先按分组读，找不到时再按旧映射读，老配置不会失效。
+ */
+export interface SubjectGroupSettings {
+  groups: SubjectGroup[];
+  /** 旧版的"标签 → 风格"扁平映射，仅用于兼容读取 */
+  legacyStyles?: Record<string, string>;
+}
+
+/** 某个标签属于哪个分组；没有归组时返回 null */
+export function groupOfTag(groups: readonly SubjectGroup[], tag: string | null | undefined): SubjectGroup | null {
+  if (!tag) return null;
+  return groups.find((g) => g.subjects.includes(tag)) ?? null;
+}
+
+/**
+ * 标签实际使用的风格：先找它所在分组，分组没有时退回旧的扁平映射。
+ * 都没设置时用通用风格，行为与改动前一致。
+ */
+export function styleIdOfTag(settings: SubjectGroupSettings | undefined | null, tag: string | null | undefined): SubjectStyleId {
+  if (!tag) return DEFAULT_SUBJECT_STYLE;
+  const group = groupOfTag(settings?.groups ?? [], tag);
+  if (group) return isSubjectStyleId(group.styleId) ? group.styleId : DEFAULT_SUBJECT_STYLE;
+  const legacy = settings?.legacyStyles?.[tag];
+  return isSubjectStyleId(legacy) ? legacy : DEFAULT_SUBJECT_STYLE;
+}
+
+/** 把标签归到某个分组，并从其他分组里移除，保证一个标签只属于一个分组 */
+export function assignTag(groups: readonly SubjectGroup[], tag: string, groupName: string | null): SubjectGroup[] {
+  const cleaned = groups.map((g) => ({ ...g, subjects: g.subjects.filter((s) => s !== tag) }));
+  if (groupName === null) return cleaned;
+  return cleaned.map((g) => (g.name === groupName ? { ...g, subjects: [...g.subjects, tag] } : g));
+}
+
+/** 清理分组：去掉空标签、重复标签和同名分组，保证展示和解析都好处理 */
+export function normalizeGroups(groups: readonly SubjectGroup[]): SubjectGroup[] {
+  const seen = new Set<string>();
+  const out: SubjectGroup[] = [];
+  for (const group of groups) {
+    const name = group.name.trim();
+    if (!name || seen.has(name)) continue;
+    seen.add(name);
+    const subjects = [...new Set(group.subjects.map((s) => s.trim()).filter(Boolean))];
+    out.push({ name, styleId: isSubjectStyleId(group.styleId) ? group.styleId : DEFAULT_SUBJECT_STYLE, subjects });
+  }
+  return out;
 }
 
 export function isSubjectStyleId(value: unknown): value is SubjectStyleId {

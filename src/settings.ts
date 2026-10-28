@@ -2,7 +2,7 @@ import { eq } from 'drizzle-orm';
 import { z } from 'zod';
 import { CORE_FORMS, EXPLAIN_FORMS, type FormPrefs, QUESTION_FORMS } from './domain/forms';
 import { type ContentGuidance, DEFAULT_CONTENT_GUIDANCE, GUIDANCE_MAX_LENGTH, resolveContentGuidance } from './shared/content-guidance';
-import { appendStyle, SUBJECT_STYLE_INFO, SUBJECT_STYLES, type SubjectStyleId, styleIdOf } from './shared/subject-styles';
+import { appendStyle, normalizeGroups, type SubjectGroup, SUBJECT_STYLE_INFO, SUBJECT_STYLES, type SubjectStyleId, styleIdOfTag } from './shared/subject-styles';
 import type { Executor } from './store/db';
 import { appSettings } from './store/schema';
 
@@ -28,7 +28,21 @@ export const UserSettingsSchema = z.object({
   tutorialGuidance: z.string().trim().max(GUIDANCE_MAX_LENGTH, `教程引导词不超过 ${GUIDANCE_MAX_LENGTH} 字`).nullable(),
   /** null 表示采用默认配图引导词。 */
   figureGuidance: z.string().trim().max(GUIDANCE_MAX_LENGTH, `配图引导词不超过 ${GUIDANCE_MAX_LENGTH} 字`).nullable(),
-  /** 学科标签 → 内容风格预设；没设置的学科按通用处理 */
+  /**
+   * 学科分组：一个大类选一套内容风格，下面挂具体的专业课标签。
+   * 空数组表示还没分组，所有标签按通用风格处理。
+   */
+  subjectGroups: z
+    .array(
+      z.object({
+        name: z.string().trim().min(1, '分组名不能为空').max(40, '分组名不超过 40 字'),
+        styleId: z.enum(SUBJECT_STYLES),
+        subjects: z.array(z.string().trim().min(1).max(40)).max(200).default([]),
+      }),
+    )
+    .max(50, '分组不超过 50 个')
+    .default([]),
+  /** 旧版的"标签 → 风格"扁平映射，只用于兼容已有配置 */
   subjectStyles: z.record(z.string().trim().max(40), z.enum(SUBJECT_STYLES)).default({}),
 });
 
@@ -44,6 +58,7 @@ export const DEFAULT_USER_SETTINGS: UserSettings = {
   boostedExplainForms: [],
   tutorialGuidance: null,
   figureGuidance: null,
+  subjectGroups: [],
   subjectStyles: {},
 };
 
@@ -61,7 +76,9 @@ export interface Settings {
   formPrefs: FormPrefs;
   /** 全局引导词：学科没有单独设置风格时用它 */
   contentGuidance: ContentGuidance;
-  /** 学科标签 → 内容风格预设 */
+  /** 学科分组：分组定风格，分组下挂具体标签 */
+  subjectGroups: SubjectGroup[];
+  /** 旧的扁平映射，兼容读取用 */
   subjectStyles: Record<string, SubjectStyleId>;
 }
 
@@ -101,16 +118,17 @@ export function toSettings(user: UserSettings, env: NodeJS.ProcessEnv = process.
     revisitIntervalDays: user.revisitIntervalDays,
     formPrefs: { blocked: user.blockedForms, boosted: user.boostedExplainForms },
     contentGuidance: resolveContentGuidance(user),
+    subjectGroups: normalizeGroups(user.subjectGroups ?? []),
     subjectStyles: user.subjectStyles ?? {},
   };
 }
 
 /**
- * 某个学科实际使用的引导词：学科选了预设时，把预设的学科要求追加到全局引导词之后。
+ * 某个学科标签实际使用的引导词：找到它所在分组，把分组的学科要求追加到全局引导词之后。
  * 预设只补充该学科特有的讲法，通用写作原则始终保留。
  */
 export function guidanceForSubject(settings: Settings, subject: string | null | undefined): ContentGuidance {
-  const style = SUBJECT_STYLE_INFO[styleIdOf(settings.subjectStyles, subject)];
+  const style = SUBJECT_STYLE_INFO[styleIdOfTag({ groups: settings.subjectGroups, legacyStyles: settings.subjectStyles }, subject)];
   if (!style.tutorial && !style.figure) return settings.contentGuidance;
   return {
     tutorialGuidance: appendStyle(settings.contentGuidance.tutorialGuidance, style.tutorial),
