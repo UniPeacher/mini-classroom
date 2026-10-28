@@ -14,9 +14,24 @@ export function PersonalizationScreen({ tab }: { tab: PersonalizationTab }) {
   const [settings, setSettings] = useState<UserSettings | null>(null);
   const [stamp, setStamp] = useState('');
   const [error, setError] = useState('');
+  // 用户最近点选的学科风格：下方引导词区据此展示合并后的完整提示词
+  const [previewStyle, setPreviewStyle] = useState<string | null>(null);
   useEffect(() => {
     if (resource.data) setSettings(resource.data.settings);
   }, [resource.data]);
+
+  // 预览：通用引导词 + 所选风格追加的学科要求，与生成时实际发给模型的文字一致
+  const preview = (() => {
+    if (!resource.data || !previewStyle) return null;
+    const option = resource.data.subjectStyles.find((o) => o.id === previewStyle);
+    if (!option) return null;
+    const merged = (base: string, extra: string) => (extra.trim() ? `${base.trimEnd()}\n\n${extra.trim()}` : base);
+    return {
+      label: option.label,
+      tutorial: merged(settings?.tutorialGuidance ?? resource.data.guidanceDefaults.tutorialGuidance, option.tutorial),
+      figure: merged(settings?.figureGuidance ?? resource.data.guidanceDefaults.figureGuidance, option.figure),
+    };
+  })();
 
   function selectTab(next: PersonalizationTab) {
     navigate({ name: 'personalization', tab: next });
@@ -85,6 +100,7 @@ export function PersonalizationScreen({ tab }: { tab: PersonalizationTab }) {
               settings={settings}
               options={resource.data.subjectStyles}
               tags={subjects.data ?? []}
+              onPreviewStyle={setPreviewStyle}
               onSaved={(saved) => {
                 setSettings((current) => current && { ...current, subjectGroups: saved.subjectGroups, tagStyles: saved.tagStyles });
                 void subjects.reload();
@@ -96,6 +112,7 @@ export function PersonalizationScreen({ tab }: { tab: PersonalizationTab }) {
               settings={settings}
               defaults={resource.data.guidanceDefaults}
               maxLength={resource.data.guidanceMaxLength}
+              preview={preview}
               onSaved={(saved) => {
                 setSettings((current) => current && {
                   ...current,

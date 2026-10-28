@@ -595,3 +595,11 @@ pre, code { font-family: var(--font-code); }
 .tag-table .select { max-width: 160px; }
 .tag-table td:nth-child(3) .muted { display: block; margin-top: 2px; }
 .tag-section-title { font-size: 14px; font-weight: 600; margin: 24px 0 6px; }
+/* 表格单元格内的补充说明：另起一行，不挤压控件 */
+.tag-table td .muted.small { display: block; margin-top: 2px; font-size: 12px; }
+/* 学科风格的完整提示词预览：折叠展示，不打断编辑区 */
+.guidance-preview { margin-bottom: 20px; padding: 12px 14px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); }
+.guidance-preview > summary { cursor: pointer; font-weight: 500; }
+.guidance-preview > summary .muted { font-weight: 400; margin-left: 6px; }
+.guidance-preview .hint { margin: 8px 0; }
+.guidance-preview-text { max-height: 320px; overflow: auto; background: var(--ground); border: 1px solid var(--rule); border-radius: 8px; padding: 10px 12px; font-size: 12px; line-height: 18px; white-space: pre-wrap; font-family: var(--font-code); }

@@ -29,11 +29,13 @@ export function createPreferences({ db, env = process.env }: PreferencesDeps) {
       settings: readUserSettings(db, env),
       guidanceDefaults: DEFAULT_CONTENT_GUIDANCE,
       guidanceMaxLength: GUIDANCE_MAX_LENGTH,
-      // 学科内容风格预设：界面据此列出可选风格及其说明
+      // 学科内容风格预设：界面据此列出可选风格、说明，以及该风格的完整要求原文
       subjectStyles: SUBJECT_STYLES.map((id) => ({
         id,
         label: SUBJECT_STYLE_INFO[id].label,
         description: SUBJECT_STYLE_INFO[id].description,
+        tutorial: SUBJECT_STYLE_INFO[id].tutorial ?? '',
+        figure: SUBJECT_STYLE_INFO[id].figure ?? '',
       })),
       forms: {
         explain: EXPLAIN_FORMS.map((f) => ({ id: f, label: FORM_INFO[f].label, mobile: FORM_INFO[f].mobile })),

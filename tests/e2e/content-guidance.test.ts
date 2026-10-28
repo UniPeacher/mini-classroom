@@ -456,3 +456,27 @@ describe('部分更新设置不会冲掉其他配置', () => {
     expect(saved.tagStyles).toEqual({ 液压传动: 'arts' });
   });
 });
+
+describe('设置接口给出各风格的完整要求', () => {
+  it('每个预设都带 tutorial 与 figure 原文，通用风格为空', async () => {
+    const h = createHarness();
+    const view = (await h.call('GET', '/api/settings')).body;
+    const byId = new Map(view.subjectStyles.map((s: any) => [s.id, s]));
+    expect((byId.get('default') as any).tutorial).toBe('');
+    expect((byId.get('default') as any).figure).toBe('');
+    for (const id of ['stem', 'programming', 'language', 'humanities', 'business', 'law', 'medicine', 'arts']) {
+      const style = byId.get(id) as any;
+      expect(style.tutorial.length).toBeGreaterThan(100);
+      expect(style.figure.length).toBeGreaterThan(20);
+      // 学科要求要能看出是哪个学科，便于用户在预览里确认
+      expect(style.tutorial).toContain('学科补充要求');
+    }
+  });
+
+  it('不同风格的追加内容互不相同', async () => {
+    const h = createHarness();
+    const view = (await h.call('GET', '/api/settings')).body;
+    const texts = view.subjectStyles.filter((s: any) => s.id !== 'default').map((s: any) => s.tutorial);
+    expect(new Set(texts).size).toBe(texts.length);
+  });
+});

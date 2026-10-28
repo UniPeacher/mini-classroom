@@ -9,6 +9,8 @@ interface SubjectStyleSettingsProps {
   options: SubjectStyleOption[];
   /** 全部已存在的学科标签及其当前状态 */
   tags: Subject[];
+  /** 用户最近点选的风格，用于下方预览它的完整引导词 */
+  onPreviewStyle: (styleId: SubjectStyleOption['id']) => void;
   onSaved: (settings: UserSettings) => void;
 }
 
@@ -18,7 +20,7 @@ interface SubjectStyleSettingsProps {
  * 并且可以单独改某个标签的风格（覆盖分组），不用绕到分组里操作。
  * 分组只管"给一组标签设同一个默认风格"。
  */
-export function SubjectStyleSettings({ settings, options, tags, onSaved }: SubjectStyleSettingsProps) {
+export function SubjectStyleSettings({ settings, options, tags, onPreviewStyle, onSaved }: SubjectStyleSettingsProps) {
   const groups = settings.subjectGroups ?? [];
   const tagStyles = settings.tagStyles ?? {};
   const [saving, setSaving] = useState(false);
@@ -131,15 +133,19 @@ export function SubjectStyleSettings({ settings, options, tags, onSaved }: Subje
       {rows.length === 0 ? (
         <p className="muted">还没有学科标签。先到某个学习主题里填上学科标签（例如「液压传动」），再回来设置风格。</p>
       ) : (
-        <table className="tag-table">
-          <thead>
-            <tr>
-              <th>标签</th>
-              <th>分组</th>
-              <th>生效风格</th>
-              <th>单独指定</th>
-            </tr>
-          </thead>
+        <>
+          <p className="muted small" style={{ marginBottom: 8 }}>
+            「单独指定」优先于「分组」：两列都留空时用通用风格。只有一个标签时，直接在「单独指定」里选就行，不用建分组。
+          </p>
+          <table className="tag-table">
+            <thead>
+              <tr>
+                <th>标签</th>
+                <th>分组（可选）</th>
+                <th>实际用的风格</th>
+                <th>单独指定（优先）</th>
+              </tr>
+            </thead>
           <tbody>
             {rows.map((row) => (
               <tr key={row.tag}>
@@ -155,19 +161,20 @@ export function SubjectStyleSettings({ settings, options, tags, onSaved }: Subje
                     aria-label={`${row.tag} 的分组`}
                     onChange={(e) => moveTag(row.tag, e.target.value || null)}
                   >
-                    <option value="">未分组</option>
+                    <option value="">不归类</option>
                     {groups.map((g) => (
                       <option key={g.name} value={g.name}>{g.name}</option>
                     ))}
                   </select>
+                  {!row.group && <span className="muted small">可选：多个标签共用风格时才有用</span>}
                 </td>
                 <td>
                   <span className={`pill ${row.styleId === 'default' ? '' : 'accent'}`}>{styleLabel(row.styleId)}</span>
                   {row.own
-                    ? <span className="muted small">单独指定</span>
+                    ? <span className="muted small">来自「单独指定」列</span>
                     : row.group
-                      ? <span className="muted small">跟随「{row.group}」</span>
-                      : <span className="muted small">无分组，用通用</span>}
+                      ? <span className="muted small">跟随分组「{row.group}」</span>
+                      : <span className="muted small">没有单独指定，用通用</span>}
                 </td>
                 <td>
                   <select
@@ -175,18 +182,20 @@ export function SubjectStyleSettings({ settings, options, tags, onSaved }: Subje
                     value={tagStyles[row.tag] ?? ''}
                     disabled={saving}
                     aria-label={`${row.tag} 的风格`}
-                    onChange={(e) => setTagStyle(row.tag, (e.target.value || null) as SubjectStyleOption['id'] | null)}
+                    onChange={(e) => { const v = (e.target.value || null) as SubjectStyleOption["id"] | null; setTagStyle(row.tag, v); if (v) onPreviewStyle(v); }}
                   >
-                    <option value="">跟随分组</option>
+                    <option value="">不单独指定</option>
                     {options.filter((o) => o.id !== 'default').map((o) => (
                       <option key={o.id} value={o.id}>{o.label}</option>
                     ))}
                   </select>
+                  {!tagStyles[row.tag] && <span className="muted small">这一列优先，留空则跟随分组</span>}
                 </td>
               </tr>
             ))}
           </tbody>
         </table>
+        </>
       )}
       {rows.length > 0 && <p className="hint">{styleDesc(tagStyles[rows[0]!.tag] ?? rows[0]!.styleId)}</p>}
 
@@ -231,7 +240,7 @@ export function SubjectStyleSettings({ settings, options, tags, onSaved }: Subje
                     aria-pressed={group.styleId === option.id}
                     title={option.description}
                     disabled={saving}
-                    onClick={() => setGroupStyle(group.name, option.id)}
+                    onClick={() => { setGroupStyle(group.name, option.id); onPreviewStyle(option.id); }}
                   >
                     {option.label}
                   </button>
@@ -268,7 +277,7 @@ export function SubjectStyleSettings({ settings, options, tags, onSaved }: Subje
               aria-pressed={newStyle === option.id}
               title={option.description}
               disabled={saving}
-              onClick={() => setNewStyle(option.id)}
+              onClick={() => { setNewStyle(option.id); onPreviewStyle(option.id); }}
             >
               {option.label}
             </button>

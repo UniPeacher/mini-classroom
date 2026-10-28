@@ -6,11 +6,17 @@ interface ContentGuidanceSettingsProps {
   settings: UserSettings;
   defaults: SettingsView['guidanceDefaults'];
   maxLength: number;
+  /** 选中某个学科风格时，预览它实际会用到的完整引导词 */
+  preview?: { label: string; tutorial: string; figure: string } | null;
   onSaved: (settings: UserSettings) => void;
 }
 
-/** 教程和配图共用一个保存入口，长文本编辑完成后再生效。 */
-export function ContentGuidanceSettings({ settings, defaults, maxLength, onSaved }: ContentGuidanceSettingsProps) {
+/**
+ * 教程和配图共用一个保存入口，长文本编辑完成后再生效。
+ * 这里编辑的始终是"全局引导词"；学科风格的要求在生成时追加在它后面，
+ * 所以有学科时额外展示一份合并后的预览，避免让人以为切换风格没生效。
+ */
+export function ContentGuidanceSettings({ settings, defaults, maxLength, preview, onSaved }: ContentGuidanceSettingsProps) {
   const tutorialValue = settings.tutorialGuidance ?? defaults.tutorialGuidance;
   const figureValue = settings.figureGuidance ?? defaults.figureGuidance;
   const [tutorialDraft, setTutorialDraft] = useState(tutorialValue);
@@ -64,6 +70,23 @@ export function ContentGuidanceSettings({ settings, defaults, maxLength, onSaved
       title="内容生成偏好"
       description="用两份引导词告诉微课堂怎样讲、怎样画。可以直接修改下面的完整说明，保存后用于新生成的讲解、复习材料及其中的配图。"
     >
+      {preview && (
+        <details className="guidance-preview">
+          <summary>
+            查看「{preview.label}」风格实际使用的完整引导词
+            <span className="muted small">（通用引导词 + 该学科追加的要求）</span>
+          </summary>
+          <p className="hint">
+            下面是生成内容时真正发给模型的文字。上半部分是全局通用引导词，下半部分是「{preview.label}」追加的学科要求。
+            学科风格只能选不能改；要改学科要求的具体内容，用下面的全局引导词补充。
+          </p>
+          <pre className="guidance-preview-text">{preview.tutorial}</pre>
+          <details>
+            <summary className="muted small">配图部分（{preview.figure.length} 字）</summary>
+            <pre className="guidance-preview-text">{preview.figure}</pre>
+          </details>
+        </details>
+      )}
       <GuidanceEditor
         id="tutorial-guidance"
         title="教程引导词"
