@@ -20,6 +20,7 @@ export function SubjectStyleSettings({ settings, options, tags, onSaved }: Subje
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const [newGroup, setNewGroup] = useState('');
+  const [newStyle, setNewStyle] = useState<SubjectStyleOption['id']>('default');
   const [editing, setEditing] = useState<string | null>(null);
 
   const assigned = new Set(groups.flatMap((g) => g.subjects));
@@ -45,7 +46,8 @@ export function SubjectStyleSettings({ settings, options, tags, onSaved }: Subje
       setNewGroup('');
       return;
     }
-    void persist([...groups, { name, styleId: 'default' as const, subjects: [] }]);
+    // 建分组时就带上选好的风格，省得建完再点一次
+    void persist([...groups, { name, styleId: newStyle, subjects: [] }]);
     setNewGroup('');
     setEditing(name);
   }
@@ -79,7 +81,7 @@ export function SubjectStyleSettings({ settings, options, tags, onSaved }: Subje
       description="先建一个学科大类并选它的内容风格，再把具体的专业课标签挂进去。同一大类下的课程共用这套风格，通用写作原则（排版、篇幅）始终保留。"
     >
       {groups.length === 0 && (
-        <p className="muted">还没有分组。先建一个，例如「理工科」选理工科风格，再把「液压传动」「数字信号处理」挂进去。</p>
+        <p className="muted">还没有分组。在下面输入一个大类名、选好风格，点「新建分组」，再把专业课标签挂进去。</p>
       )}
       <div className="subject-group-list">
         {groups.map((group) => {
@@ -164,20 +166,39 @@ export function SubjectStyleSettings({ settings, options, tags, onSaved }: Subje
         })}
       </div>
 
-      <div className="actions-row" style={{ marginTop: 16 }}>
-        <input
-          className="input"
-          type="text"
-          maxLength={40}
-          value={newGroup}
-          placeholder="新分组名，例如：理工科"
-          disabled={saving}
-          onChange={(e) => setNewGroup(e.target.value)}
-          onKeyDown={(e) => { if (e.key === 'Enter') addGroup(); }}
-        />
-        <button type="button" className="btn small" onClick={addGroup} disabled={saving || !newGroup.trim()}>
-          新建分组
-        </button>
+      <div className="new-group">
+        <div className="actions-row" style={{ marginTop: 16 }}>
+          <input
+            className="input"
+            type="text"
+            maxLength={40}
+            value={newGroup}
+            placeholder="新分组名，例如：理工科"
+            disabled={saving}
+            onChange={(e) => setNewGroup(e.target.value)}
+            onKeyDown={(e) => { if (e.key === 'Enter') addGroup(); }}
+          />
+          <button type="button" className="btn small" onClick={addGroup} disabled={saving || !newGroup.trim()}>
+            新建分组
+          </button>
+        </div>
+        {/* 建分组时就能选风格，不必建完再点一次 */}
+        <div className="subject-group-styles" style={{ marginTop: 8 }}>
+          {options.map((option) => (
+            <button
+              key={option.id}
+              type="button"
+              className={`btn small ${newStyle === option.id ? 'selected' : ''}`}
+              aria-pressed={newStyle === option.id}
+              title={option.description}
+              disabled={saving}
+              onClick={() => setNewStyle(option.id)}
+            >
+              {option.label}
+            </button>
+          ))}
+        </div>
+        <p className="hint">{options.find((o) => o.id === newStyle)?.description}</p>
       </div>
 
       {unassigned.length > 0 && (

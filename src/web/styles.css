@@ -580,3 +580,6 @@ pre, code { font-family: var(--font-code); }
 .subject-group .hint { margin: 0; }
 .pill-remove { margin-left: 4px; border: 0; background: none; color: inherit; cursor: pointer; font-size: 14px; line-height: 1; padding: 0 2px; opacity: .7; }
 .pill-remove:hover { opacity: 1; }
+/* 新建分组区域：输入端、风格选择与说明成组 */
+.new-group { padding: 14px 0 0; }
+.new-group .hint { margin: 6px 0 0; }
