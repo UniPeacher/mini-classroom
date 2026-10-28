@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { appendStyle, assignTag, groupOfTag, isSubjectStyleId, normalizeGroups, styleIdOfTag, SUBJECT_STYLE_INFO, SUBJECT_STYLES } from '../../src/shared/subject-styles';
+import { appendStyle, assignTag, groupOfTag, hasOwnStyle, isSubjectStyleId, normalizeGroups, styleIdOfTag, SUBJECT_STYLE_INFO, SUBJECT_STYLES, withTagStyle } from '../../src/shared/subject-styles';
 
 /** 学科预设只追加，不替换通用写作原则；未设置时行为与改动前一致 */
 describe('学科内容风格预设', () => {
@@ -103,5 +103,35 @@ describe('学科内容风格预设', () => {
     expect(isSubjectStyleId('language')).toBe(true);
     expect(isSubjectStyleId('quantum')).toBe(false);
     expect(isSubjectStyleId(null)).toBe(false);
+  });
+});
+
+describe('标签可以单独覆盖分组风格', () => {
+  const groups = [{ name: '理工科', styleId: 'stem' as const, subjects: ['液压传动', '数字信号处理'] }];
+
+  it('标签自己的风格优先于所属分组', () => {
+    const settings = { groups, tagStyles: { 液压传动: 'programming' } };
+    expect(styleIdOfTag(settings, '液压传动')).toBe('programming');
+    // 同组另一个标签仍然跟随分组
+    expect(styleIdOfTag(settings, '数字信号处理')).toBe('stem');
+  });
+
+  it('能判断标签是否用了自己的覆盖', () => {
+    const settings = { groups, tagStyles: { 液压传动: 'programming' } };
+    expect(hasOwnStyle(settings, '液压传动')).toBe(true);
+    expect(hasOwnStyle(settings, '数字信号处理')).toBe(false);
+    expect(hasOwnStyle(undefined, '液压传动')).toBe(false);
+  });
+
+  it('取消覆盖后重新跟随分组', () => {
+    const before = withTagStyle({ 液压传动: 'programming' }, '液压传动', null);
+    expect(before).toEqual({});
+    expect(styleIdOfTag({ groups, tagStyles: before }, '液压传动')).toBe('stem');
+  });
+
+  it('设置覆盖不影响其他标签的覆盖', () => {
+    const next = withTagStyle({ 液压传动: 'programming' }, '数字信号处理', 'arts');
+    expect(next).toEqual({ 液压传动: 'programming', 数字信号处理: 'arts' });
+    expect(withTagStyle(undefined, 'x', 'stem')).toEqual({ x: 'stem' });
   });
 });

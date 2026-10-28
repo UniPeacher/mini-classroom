@@ -2,7 +2,9 @@ import { serveStatic } from '@hono/node-server/serve-static';
 import { Hono } from 'hono';
 import { z } from 'zod';
 import { AiSettingsPatchSchema } from '../ai-settings';
+import { CORE_FORMS, EXPLAIN_FORMS, QUESTION_FORMS } from '../domain/forms';
 import { UserSettingsSchema } from '../settings';
+import { SUBJECT_STYLES } from '../shared/subject-styles';
 import { TopicIdeaSchema } from '../shared/topic-planning';
 import type { Services } from './services';
 import { LearningError } from './views';
@@ -82,7 +84,31 @@ const ExportBody = z.object({ topicIds: z.array(z.string()).min(1, '请选择至
 const ReviewQuery = z.object({ timeZone: z.string().min(1), topicId: z.string().optional() });
 const TimeZoneQuery = z.object({ timeZone: z.string().min(1) });
 const DayParam = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, '日期格式应为 YYYY-MM-DD');
-const SettingsPatch = UserSettingsSchema.partial();
+/**
+ * 设置的部分更新：只校验传了的字段。
+ * partial() 不会去掉字段上的 .default()，而 zod 对缺省字段会补上默认值（如空数组），
+ * 合并时就可能把已保存的配置冲掉。所以这里显式去掉带默认值字段的默认值。
+ */
+const SettingsPatch = z.object({
+  sessionMinutes: UserSettingsSchema.shape.sessionMinutes.optional(),
+  maxNewPerSession: UserSettingsSchema.shape.maxNewPerSession.optional(),
+  reminderTimes: z.array(z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/, '时间格式应为 HH:MM')).max(6, '最多 6 个提醒时段').optional(),
+  dailySessionCap: UserSettingsSchema.shape.dailySessionCap.optional(),
+  revisitIntervalDays: UserSettingsSchema.shape.revisitIntervalDays.optional(),
+  blockedForms: z.array(z.enum([...EXPLAIN_FORMS, ...QUESTION_FORMS]))
+    .refine((forms) => forms.every((f) => !(CORE_FORMS as readonly string[]).includes(f)), '核心检验形式不能屏蔽')
+    .optional(),
+  boostedExplainForms: z.array(z.enum(EXPLAIN_FORMS)).optional(),
+  tutorialGuidance: UserSettingsSchema.shape.tutorialGuidance.optional(),
+  figureGuidance: UserSettingsSchema.shape.figureGuidance.optional(),
+  subjectGroups: z.array(z.object({
+    name: z.string().trim().min(1, '分组名不能为空').max(40, '分组名不超过 40 字'),
+    styleId: z.enum(SUBJECT_STYLES),
+    subjects: z.array(z.string().trim().min(1).max(40)).max(200),
+  })).max(50, '分组不超过 50 个').optional(),
+  tagStyles: z.record(z.string().trim().max(40), z.enum(SUBJECT_STYLES)).optional(),
+  subjectStyles: z.record(z.string().trim().max(40), z.enum(SUBJECT_STYLES)).optional(),
+});
 const AiTestBody = z.object({ target: z.enum(['text', 'image']), patch: AiSettingsPatchSchema.default({}) });
 
 /** 组装 HTTP 应用；依赖由调用方注入，便于测试。 */

@@ -181,6 +181,8 @@ export interface SubjectGroup {
  */
 export interface SubjectGroupSettings {
   groups: SubjectGroup[];
+  /** 单个标签的风格覆盖：某个课不想跟分组走时单独指定 */
+  tagStyles?: Record<string, string>;
   /** 旧版的"标签 → 风格"扁平映射，仅用于兼容读取 */
   legacyStyles?: Record<string, string>;
 }
@@ -192,15 +194,36 @@ export function groupOfTag(groups: readonly SubjectGroup[], tag: string | null |
 }
 
 /**
- * 标签实际使用的风格：先找它所在分组，分组没有时退回旧的扁平映射。
- * 都没设置时用通用风格，行为与改动前一致。
+ * 标签实际使用的风格，优先级从高到低：
+ * 1. 这个标签自己的覆盖；
+ * 2. 它所在分组选的风格；
+ * 3. 旧版的扁平映射（升级前配过）；
+ * 4. 通用。
  */
 export function styleIdOfTag(settings: SubjectGroupSettings | undefined | null, tag: string | null | undefined): SubjectStyleId {
   if (!tag) return DEFAULT_SUBJECT_STYLE;
+  const own = settings?.tagStyles?.[tag];
+  if (isSubjectStyleId(own)) return own;
   const group = groupOfTag(settings?.groups ?? [], tag);
   if (group) return isSubjectStyleId(group.styleId) ? group.styleId : DEFAULT_SUBJECT_STYLE;
   const legacy = settings?.legacyStyles?.[tag];
   return isSubjectStyleId(legacy) ? legacy : DEFAULT_SUBJECT_STYLE;
+}
+
+/** 这个标签用的是不是自己的覆盖（而不是跟随分组） */
+export function hasOwnStyle(settings: SubjectGroupSettings | undefined | null, tag: string): boolean {
+  return isSubjectStyleId(settings?.tagStyles?.[tag]);
+}
+
+/**
+ * 设置标签自己的风格；传 null 表示取消覆盖、重新跟随分组。
+ * 返回新的覆盖表，未变化的项保持原样。
+ */
+export function withTagStyle(tagStyles: Record<string, string> | undefined, tag: string, styleId: SubjectStyleId | null): Record<string, string> {
+  const next = { ...(tagStyles ?? {}) };
+  if (styleId === null) delete next[tag];
+  else next[tag] = styleId;
+  return next;
 }
 
 /** 把标签归到某个分组，并从其他分组里移除，保证一个标签只属于一个分组 */

@@ -42,6 +42,8 @@ export const UserSettingsSchema = z.object({
     )
     .max(50, '分组不超过 50 个')
     .default([]),
+  /** 单个标签的风格覆盖：某门课不跟分组走时单独指定 */
+  tagStyles: z.record(z.string().trim().max(40), z.enum(SUBJECT_STYLES)).default({}),
   /** 旧版的"标签 → 风格"扁平映射，只用于兼容已有配置 */
   subjectStyles: z.record(z.string().trim().max(40), z.enum(SUBJECT_STYLES)).default({}),
 });
@@ -59,6 +61,7 @@ export const DEFAULT_USER_SETTINGS: UserSettings = {
   tutorialGuidance: null,
   figureGuidance: null,
   subjectGroups: [],
+  tagStyles: {},
   subjectStyles: {},
 };
 
@@ -78,6 +81,8 @@ export interface Settings {
   contentGuidance: ContentGuidance;
   /** 学科分组：分组定风格，分组下挂具体标签 */
   subjectGroups: SubjectGroup[];
+  /** 单个标签的风格覆盖，优先于所属分组 */
+  tagStyles: Record<string, SubjectStyleId>;
   /** 旧的扁平映射，兼容读取用 */
   subjectStyles: Record<string, SubjectStyleId>;
 }
@@ -119,6 +124,7 @@ export function toSettings(user: UserSettings, env: NodeJS.ProcessEnv = process.
     formPrefs: { blocked: user.blockedForms, boosted: user.boostedExplainForms },
     contentGuidance: resolveContentGuidance(user),
     subjectGroups: normalizeGroups(user.subjectGroups ?? []),
+    tagStyles: user.tagStyles ?? {},
     subjectStyles: user.subjectStyles ?? {},
   };
 }
@@ -128,7 +134,7 @@ export function toSettings(user: UserSettings, env: NodeJS.ProcessEnv = process.
  * 预设只补充该学科特有的讲法，通用写作原则始终保留。
  */
 export function guidanceForSubject(settings: Settings, subject: string | null | undefined): ContentGuidance {
-  const style = SUBJECT_STYLE_INFO[styleIdOfTag({ groups: settings.subjectGroups, legacyStyles: settings.subjectStyles }, subject)];
+  const style = SUBJECT_STYLE_INFO[styleIdOfTag({ groups: settings.subjectGroups, tagStyles: settings.tagStyles, legacyStyles: settings.subjectStyles }, subject)];
   if (!style.tutorial && !style.figure) return settings.contentGuidance;
   return {
     tutorialGuidance: appendStyle(settings.contentGuidance.tutorialGuidance, style.tutorial),

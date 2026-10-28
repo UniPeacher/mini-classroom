@@ -583,3 +583,15 @@ pre, code { font-family: var(--font-code); }
 /* 新建分组区域：输入端、风格选择与说明成组 */
 .new-group { padding: 14px 0 0; }
 .new-group .hint { margin: 6px 0 0; }
+/* ---------- 学科标签总览表 ---------- */
+.tag-table-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 10px; }
+.tag-table-head h3 { font-size: 14px; font-weight: 600; }
+.tag-table-head .input { max-width: 220px; }
+.tag-table { width: 100%; border-collapse: collapse; font-size: 14px; margin-bottom: 8px; }
+.tag-table th { text-align: left; font-weight: 500; color: var(--muted); font-size: 13px; padding: 6px 10px 6px 0; border-bottom: 1px solid var(--border); }
+.tag-table td { padding: 8px 10px 8px 0; border-bottom: 1px solid var(--rule); vertical-align: middle; }
+.tag-table td:first-child { min-width: 140px; }
+.tag-table .tag-name { font-weight: 500; margin-right: 8px; }
+.tag-table .select { max-width: 160px; }
+.tag-table td:nth-child(3) .muted { display: block; margin-top: 2px; }
+.tag-section-title { font-size: 14px; font-weight: 600; margin: 24px 0 6px; }

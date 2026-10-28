@@ -59,8 +59,9 @@ export function createPreferences({ db, env = process.env }: PreferencesDeps) {
       const beforeSettings = toSettings(readUserSettings(tx, env), env);
       const saved = writeUserSettings(tx, patch, now, env);
       const afterSettings = toSettings(saved, env);
-      // 引导词或学科分组变了才需要重新判断；其他设置不影响已备好的内容
+      // 引导词、分组或标签覆盖变了才需要重新判断；其他设置不影响已备好的内容
       const guidancePatched = patch.subjectStyles !== undefined || patch.subjectGroups !== undefined
+        || patch.tagStyles !== undefined
         || !sameContentGuidance(beforeSettings.contentGuidance, afterSettings.contentGuidance);
       if (guidancePatched) {
         // 逐个知识点比较实际生效的引导词：改一个分组只影响挂在它下面的学科

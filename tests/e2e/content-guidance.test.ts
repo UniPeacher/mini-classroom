@@ -374,3 +374,85 @@ describe('学科分组：大类定风格，下面挂多门课', () => {
     expect((await h.call('PUT', '/api/settings', { subjectGroups: [{ name: '  ', styleId: 'stem', subjects: [] }] })).status).toBe(400);
   });
 });
+
+describe('单个标签单独指定风格', () => {
+  it('标签自己的风格优先于分组，且只作废这个标签的内容', async () => {
+    const h = createHarness();
+    const hyd = await h.startTopic('阀控缸');
+    const dsp = await h.startTopic('离散时间信号');
+    await h.call('PATCH', `/api/topics/${hyd}`, { subject: '液压传动' });
+    await h.call('PATCH', `/api/topics/${dsp}`, { subject: '数字信号处理' });
+    await h.call('PUT', '/api/settings', {
+      subjectGroups: [{ name: '理工科', styleId: 'stem', subjects: ['液压传动', '数字信号处理'] }],
+    });
+    await h.worker.runUntilIdle();
+    const before = loadPool(h.db);
+    expect(before.length).toBeGreaterThan(0);
+
+    // 只给液压传动单独指定风格
+    await h.call('PUT', '/api/settings', { tagStyles: { 液压传动: 'programming' } });
+
+    const { subjects } = (await h.call('GET', '/api/subjects')).body;
+    const hydRow = subjects.find((s: any) => s.subject === '液压传动');
+    const dspRow = subjects.find((s: any) => s.subject === '数字信号处理');
+    expect(hydRow.styleId).toBe('programming');
+    expect(hydRow.ownStyle).toBe(true);
+    expect(dspRow.styleId).toBe('stem');
+    expect(dspRow.ownStyle).toBe(false);
+
+    // 液压传动的内容被重新准备，数字信号处理的保留
+    const subjectOfPoint = new Map<string, string | null>();
+    for (const row of h.db.select({ id: knowledgePoints.id, subject: topics.subject }).from(knowledgePoints).innerJoin(topics, eq(knowledgePoints.topicId, topics.id)).all()) {
+      subjectOfPoint.set(row.id, row.subject);
+    }
+    const after = loadPool(h.db);
+    expect(after.some((i) => subjectOfPoint.get(i.knowledgePointId) === '液压传动')).toBe(false);
+    expect(after.some((i) => subjectOfPoint.get(i.knowledgePointId) === '数字信号处理')).toBe(true);
+  });
+
+  it('取消单独指定后重新跟随分组', async () => {
+    const h = createHarness();
+    const hyd = await h.startTopic('阀控缸');
+    await h.call('PATCH', `/api/topics/${hyd}`, { subject: '液压传动' });
+    await h.call('PUT', '/api/settings', { subjectGroups: [{ name: '理工科', styleId: 'stem', subjects: ['液压传动'] }] });
+    await h.call('PUT', '/api/settings', { tagStyles: { 液压传动: 'arts' } });
+    let row = (await h.call('GET', '/api/subjects')).body.subjects.find((s: any) => s.subject === '液压传动');
+    expect(row.styleId).toBe('arts');
+
+    await h.call('PUT', '/api/settings', { tagStyles: {} });
+    row = (await h.call('GET', '/api/subjects')).body.subjects.find((s: any) => s.subject === '液压传动');
+    expect(row.styleId).toBe('stem');
+    expect(row.ownStyle).toBe(false);
+  });
+});
+
+describe('部分更新设置不会冲掉其他配置', () => {
+  it('只改标签覆盖时，已保存的分组和引导词保持不变', async () => {
+    const h = createHarness();
+    const hyd = await h.startTopic('阀控缸');
+    await h.call('PATCH', `/api/topics/${hyd}`, { subject: '液压传动' });
+    const grouping = [{ name: '理工科', styleId: 'stem', subjects: ['液压传动'] }];
+    await h.call('PUT', '/api/settings', { subjectGroups: grouping, tutorialGuidance: CUSTOM.tutorialGuidance });
+
+    await h.call('PUT', '/api/settings', { tagStyles: { 液压传动: 'programming' } });
+
+    const saved = (await h.call('GET', '/api/settings')).body.settings;
+    expect(saved.subjectGroups).toEqual(grouping);
+    expect(saved.tutorialGuidance).toBe(CUSTOM.tutorialGuidance);
+    expect(saved.tagStyles).toEqual({ 液压传动: 'programming' });
+  });
+
+  it('只改学习节奏时，分组与标签覆盖都保留', async () => {
+    const h = createHarness();
+    await h.call('PUT', '/api/settings', {
+      subjectGroups: [{ name: '理工科', styleId: 'stem', subjects: ['液压传动'] }],
+      tagStyles: { 液压传动: 'arts' },
+    });
+    await h.call('PUT', '/api/settings', { sessionMinutes: 15 });
+
+    const saved = (await h.call('GET', '/api/settings')).body.settings;
+    expect(saved.sessionMinutes).toBe(15);
+    expect(saved.subjectGroups).toHaveLength(1);
+    expect(saved.tagStyles).toEqual({ 液压传动: 'arts' });
+  });
+});

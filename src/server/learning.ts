@@ -26,7 +26,7 @@ import { fillPool } from '../jobs/fill-pool';
 import { contextOf, generateItem, saveGeneratedItem } from '../jobs/generate-item';
 import { enqueue } from '../jobs/queue';
 import { type Settings, guidanceForSubject, readState, writeState } from '../settings';
-import { groupOfTag, type SubjectStyleId, styleIdOfTag } from '../shared/subject-styles';
+import { groupOfTag, hasOwnStyle, type SubjectStyleId, styleIdOfTag } from '../shared/subject-styles';
 import { type ConnectionContent, type Grade, type Question, isOpenQuestion } from '../shared/content';
 import { sameContentGuidance } from '../shared/content-guidance';
 import type { Db } from '../store/db';
@@ -114,9 +114,18 @@ export function createLearning({ db, model, settings: currentSettings, illustrat
     const rows = loadPoints(db);
     const states = loadStates(db);
     const settings = currentSettings();
-    const groupStyle = { groups: settings.subjectGroups, legacyStyles: settings.subjectStyles };
+    const groupStyle = { groups: settings.subjectGroups, tagStyles: settings.tagStyles, legacyStyles: settings.subjectStyles };
     const now = new Date();
-    const bySubject = new Map<string, { subject: string; styleId: SubjectStyleId; group: string | null; topicIds: Set<string>; edge: number; due: number }>();
+    const bySubject = new Map<string, {
+      subject: string;
+      styleId: SubjectStyleId;
+      group: string | null;
+      /** 是否用了标签自己的覆盖，而不是跟随分组 */
+      ownStyle: boolean;
+      topicIds: Set<string>;
+      edge: number;
+      due: number;
+    }>();
     for (const topic of db.select().from(topics).where(isNotNull(topics.subject)).all()) {
       const subject = topic.subject!.trim();
       if (!subject) continue;
@@ -124,6 +133,7 @@ export function createLearning({ db, model, settings: currentSettings, illustrat
         subject,
         styleId: styleIdOfTag(groupStyle, subject),
         group: groupOfTag(settings.subjectGroups, subject)?.name ?? null,
+        ownStyle: hasOwnStyle(groupStyle, subject),
         topicIds: new Set<string>(),
         edge: 0,
         due: 0,
@@ -141,7 +151,7 @@ export function createLearning({ db, model, settings: currentSettings, illustrat
       if (!p.excluded && card != null && card.due.getTime() <= now.getTime()) entry.due += 1;
     }
     return [...bySubject.values()]
-      .map((e) => ({ subject: e.subject, styleId: e.styleId, group: e.group, topicCount: e.topicIds.size, edge: e.edge, due: e.due }))
+      .map((e) => ({ subject: e.subject, styleId: e.styleId, group: e.group, ownStyle: e.ownStyle, topicCount: e.topicIds.size, edge: e.edge, due: e.due }))
       .sort((a, b) => a.subject.localeCompare(b.subject, 'zh-CN'));
   }
 
