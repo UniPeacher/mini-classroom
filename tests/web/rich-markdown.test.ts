@@ -39,6 +39,43 @@ describe('讲解的 Markdown 渲染', () => {
     expect(render('[点我](javascript:alert(1))')).not.toContain('javascript:');
   });
 
+  it('行内公式渲染为 KaTeX，不再显示成 $...$ 原文', () => {
+    const html = render('控制电流记为 $I$，先导腔压力记为 $P_p$。');
+    expect(html).toContain('class="katex"');
+    expect(html).not.toContain('$I$');
+    expect(html).not.toContain('$P_p$');
+  });
+
+  it('单独占一行的 $$...$$ 也按独立公式居中显示', () => {
+    const html = render('速度关系：\n\n$$v = \\frac{dx}{dt}$$\n');
+    expect(html).toContain('katex-display');
+    expect(html).not.toContain('$$');
+  });
+
+  it('表格单元格里的行内公式照常渲染（变量符号列）', () => {
+    const html = render('| 测点 | 变量符号 | 响应起跳时间 |\n|---|---|---|\n| 控制电流 | $I$ | 0.00 s |\n| 主阀位移 | $x_v$ | 0.08 s |');
+    expect(html).toContain('<table>');
+    expect(html.match(/class="katex"/g)?.length).toBe(2);
+    expect(html).not.toContain('$x_v$');
+  });
+
+  it('句中写在一起的两个变量不误判为独立公式', () => {
+    const html = render('流量由 $P_p$ 和 $P_b$ 共同决定。');
+    expect(html).toContain('class="katex"');
+    expect(html).not.toContain('katex-display');
+    expect(html).not.toContain('$P_p$');
+  });
+
+  it('公式写错时不抛错，整段内容照常显示', () => {
+    const html = render('这里有一个错误公式 $\\frac{1}{$，后面还有正文。');
+    expect(html).toContain('后面还有正文');
+    expect(html).toContain('katex-error');
+  });
+
+  it('公式分隔符不会被当成数学渲染：普通文本里的价格照常显示', () => {
+    expect(render('课程价格 100 元')).toContain('课程价格 100 元');
+  });
+
   it('AI 内容中的外部图片不自动加载，保留图片说明', () => {
     const html = render('![概念示意](https://attacker.invalid/track?answer=private)');
     expect(html).not.toContain('<img');

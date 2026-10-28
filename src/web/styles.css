@@ -270,6 +270,11 @@ pre, code { font-family: var(--font-code); }
 .reading pre, .code-block { background: #f4f6f3; border: 1px solid var(--border); border-radius: 12px; padding: 12px 14px; overflow-x: auto; font-size: 13px; line-height: 20px; }
 .reading code { font-size: 0.88em; background: #eef1ed; padding: 1px 5px; border-radius: 5px; }
 .reading pre code { background: none; padding: 0; font-size: inherit; }
+/* 公式：行内公式随文字基线排，不撑破行；独立成段的公式居中，过长时横向滚动 */
+.katex { font-size: 1.05em; }
+.katex-display { margin: 12px 0; padding: 2px 0; overflow-x: auto; overflow-y: hidden; }
+.katex-error { color: var(--negative); }
+.option .option-text .katex-display { margin: 6px 0; }
 .lesson-block { padding-bottom: 24px; margin-bottom: 24px; border-bottom: 1px solid var(--rule); }
 .step { padding: 14px 16px; border-radius: var(--radius-inner); background: var(--surface); margin-top: 10px; }
 .step-count { color: var(--muted); font-size: var(--fs-small); margin-bottom: 4px; }

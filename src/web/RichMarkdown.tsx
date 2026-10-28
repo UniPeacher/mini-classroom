@@ -1,9 +1,12 @@
 import { useEffect, useState } from 'react';
-import Markdown, { type Components, defaultUrlTransform } from 'react-markdown';
+import Markdown, { type Components, type Options, defaultUrlTransform } from 'react-markdown';
+import rehypeKatex from 'rehype-katex';
 import remarkGfm from 'remark-gfm';
+import remarkMath from 'remark-math';
 import { api } from './api';
 import { Icon } from './components/Icon';
 import { languageOf, renderMermaid, svgToDataUri } from './diagram';
+import { normalizeDisplayMath } from './math';
 
 // 插画用 illustration:<id> 引用（与 src/shared/content.ts 的 ILLUSTRATION_SCHEME 一致，前端不引入 zod 那份模块）
 // 默认的链接过滤会把这种自定义协议清空，这里放行
@@ -39,13 +42,20 @@ const components: Components = {
 };
 
 // GitHub 风格的 Markdown：表格、删除线、任务列表、自动链接。写作原则要求并列的规则写成表格，必须能渲染
-const remarkPlugins = [remarkGfm];
+const remarkPlugins: Options['remarkPlugins'] = [remarkGfm, remarkMath];
+// 数学公式：$...$ 行内、$$...$$ 独立成段。公式写错时照常排版并标红，不让整段内容渲染失败
+const rehypePlugins: Options['rehypePlugins'] = [[rehypeKatex, { throwOnError: false, strict: false }]];
 
-/** 支持图解和表格的 Markdown。不渲染原始 HTML，AI 生成的内容不能注入脚本。 */
+/** 支持图解、表格和数学公式的 Markdown。不渲染原始 HTML，AI 生成的内容不能注入脚本。 */
 export function RichMarkdown({ children }: { children?: string | null }) {
   return (
-    <Markdown components={components} remarkPlugins={remarkPlugins} urlTransform={urlTransform}>
-      {children ?? ''}
+    <Markdown
+      components={components}
+      remarkPlugins={remarkPlugins}
+      rehypePlugins={rehypePlugins}
+      urlTransform={urlTransform}
+    >
+      {normalizeDisplayMath(children ?? '')}
     </Markdown>
   );
 }

@@ -14,6 +14,8 @@ import { SettingsScreen } from './screens/SettingsScreen';
 import { TodayScreen } from './screens/TodayScreen';
 import { TopicScreen } from './screens/TopicScreen';
 import { TopicPlanningScreen } from './screens/TopicPlanningScreen';
+// 公式的字体和排版来自 KaTeX；放在项目样式之前，方便主题覆盖
+import 'katex/dist/katex.min.css';
 import './styles.css';
 
 const NAV: { route: Route; label: string; icon: IconName }[] = [
